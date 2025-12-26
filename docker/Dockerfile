@@ -7,7 +7,24 @@
 #   Then in RUN: --mount=type=secret,id=pip_token cat /run/secrets/pip_token
 
 # ============================================
-# Build stage - Install dependencies
+# Frontend build stage - Build Mini App
+# ============================================
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /app
+
+# Copy Mini App source
+COPY mini_app_frontend/package*.json ./
+
+# Install dependencies
+RUN npm ci --ignore-scripts
+
+# Copy source and build
+COPY mini_app_frontend/ ./
+RUN npm run build
+
+# ============================================
+# Build stage - Install Python dependencies
 # ============================================
 FROM python:3.12-slim AS builder
 
@@ -90,6 +107,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY src/ ./src/
 COPY scripts/ ./scripts/
 COPY alembic.ini ./
+
+# Copy Mini App frontend build from node stage
+# Bot serves static files from src/saqshy/static/mini_app/
+COPY --from=frontend-builder /app/dist/ ./src/saqshy/static/mini_app/
 
 # Set ownership
 RUN chown -R saqshy:saqshy /app

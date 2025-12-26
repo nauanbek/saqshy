@@ -84,18 +84,13 @@ def create_dispatcher(
     dp.workflow_data["spam_db"] = spam_db
     dp.workflow_data["channel_subscription_service"] = channel_subscription_service
 
-    # Import routers
-    from saqshy.bot.handlers import callbacks, commands, members, messages
+    # Import the main router which already includes all sub-routers
+    # (commands, callbacks, members, messages) in the correct priority order
+    # See saqshy/bot/handlers/__init__.py for the router hierarchy
+    from saqshy.bot.handlers import router as main_router
 
-    # Register routers in priority order
-    # Commands router first (handles /start, /help, etc. before message handler)
-    dp.include_router(commands.router)
-    # Callbacks router for inline keyboard handling
-    dp.include_router(callbacks.router)
-    # Members router for join/leave events
-    dp.include_router(members.router)
-    # Messages router last (catches all remaining messages)
-    dp.include_router(messages.router)
+    # Register the main router (contains all handlers)
+    dp.include_router(main_router)
 
     # Import middlewares
     from saqshy.bot.middlewares import (
@@ -128,7 +123,8 @@ def create_dispatcher(
 
     logger.info(
         "dispatcher_created",
-        routers=["commands", "callbacks", "members", "messages"],
+        router="main",
+        sub_routers=["commands", "callbacks", "members", "messages"],
         middlewares=["error", "logging", "auth", "rate_limit"],
     )
 

@@ -80,8 +80,8 @@ async def _handle_start_private(
         ],
     ]
 
-    # Add Mini App button only if URL is configured
-    if mini_app_url:
+    # Add Mini App button only if URL is configured and valid (HTTPS required)
+    if mini_app_url and mini_app_url.startswith("https://"):
         buttons.append([
             InlineKeyboardButton(
                 text="Open Settings",
@@ -294,8 +294,8 @@ async def cmd_settings(
     # Build settings keyboard
     buttons = []
 
-    # Add Mini App button only if URL is configured
-    if mini_app_url:
+    # Add Mini App button only if URL is configured and valid (HTTPS required)
+    if mini_app_url and mini_app_url.startswith("https://"):
         # Use query parameter format: ?group_id=XXX
         settings_url = f"{mini_app_url}?group_id={chat_id}"
         buttons.append([

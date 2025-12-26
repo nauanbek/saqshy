@@ -297,15 +297,37 @@ CRYPTO_SCAM_PHRASES: list[str] = [
     "recover lost crypto",
     "recover stolen",
     "crypto recovery",
-    # Giveaway scams
+    # Giveaway/Airdrop scams
+    "airdrop",  # Standalone airdrop is almost always scam
+    "free airdrop",
     "airdrop claim",
+    "claim airdrop",
+    "get airdrop",
+    "free tokens",
     "free tokens claim",
     "claim your reward",
+    "claim reward",
+    "free crypto",
+    "free nft",
+    # Channel promotion (spam)
+    "join channel",
+    "join our channel",
+    "join now",
+    "join t.me",
+    "join telegram",
+    # Urgency phrases
+    "limited time",
+    "hurry up",
+    "act now",
+    "don't miss",
     # Common patterns (Russian)
     "гарантированный доход",
     "пассивный доход",
     "удвоить депозит",
     "написать в лс",
+    "вступай в канал",
+    "бесплатный аирдроп",
+    "бесплатные токены",
 ]
 
 

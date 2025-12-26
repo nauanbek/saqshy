@@ -302,7 +302,15 @@ async def lifespan(app: web.Application) -> AsyncIterator[None]:
             # Build mini app URL from webhook base URL if not explicitly set
             mini_app_url = settings.mini_app.url
             if not mini_app_url and settings.webhook.base_url:
-                mini_app_url = f"{settings.webhook.base_url}/app"
+                # Remove trailing slash from base_url if present
+                base = settings.webhook.base_url.rstrip("/")
+                mini_app_url = f"{base}/app"
+
+            logger.info(
+                "mini_app_url_configured",
+                mini_app_url=mini_app_url,
+                from_settings=bool(settings.mini_app.url),
+            )
 
             dispatcher = create_dispatcher(
                 cache_service=cache_service,

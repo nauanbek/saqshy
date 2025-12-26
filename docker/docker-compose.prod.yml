@@ -85,9 +85,11 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
-    # Expose port 8080 for Traefik routing
-    ports:
-      - "8080:8080"
+    # Port 8080 is exposed via Dockerfile EXPOSE directive
+    # Coolify/Traefik routes traffic to container via Docker network
+    # Do NOT use 'ports:' - causes "port already allocated" errors in Coolify
+    expose:
+      - "8080"
     deploy:
       resources:
         limits:

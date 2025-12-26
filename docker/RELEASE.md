@@ -1,158 +1,75 @@
 # SAQSHY Release and Deployment Guide
 
-This document provides step-by-step instructions for deploying SAQSHY to production.
+This document provides step-by-step instructions for deploying SAQSHY to production using Coolify.
 
 ## Prerequisites
 
-- Docker 24.x and Docker Compose v2
-- SSL certificate and key for your domain
-- Access to production server (VPS)
+- Coolify v4 instance configured
+- Access to Coolify dashboard
 - Telegram Bot Token configured
 - API keys for Anthropic and Cohere
 
-## Directory Structure
+## Coolify Deployment
 
+### Step 1: Create Application in Coolify
+
+1. Go to Coolify dashboard
+2. Create new **Docker Compose** application
+3. Connect your GitHub repository (`nauanbek/saqshy`)
+4. Set the compose file path: `docker/docker-compose.prod.yml`
+
+### Step 2: Configure Environment Variables
+
+In Coolify dashboard, add these environment variables:
+
+**Required:**
 ```
-/opt/saqshy/                 # Production deployment root
-├── docker/
-│   ├── docker-compose.prod.yml
-│   ├── Dockerfile
-│   └── nginx/
-│       ├── nginx.conf
-│       └── ssl/
-│           ├── cert.pem
-│           └── key.pem
-├── src/
-├── scripts/
-├── alembic/
-├── mini_app_frontend/
-│   └── dist/               # Built frontend assets
-└── .env.prod
+TELEGRAM_BOT_TOKEN=<your bot token>
+ANTHROPIC_API_KEY=<your key>
+COHERE_API_KEY=<your key>
+POSTGRES_PASSWORD=<strong random password>
+JWT_SECRET=<random 32+ char string>
+WEBHOOK_BASE_URL=https://your-domain.com
+WEBHOOK_SECRET=<random string>
 ```
 
----
+**Optional (have defaults):**
+```
+POSTGRES_USER=saqshy
+POSTGRES_DB=saqshy
+QDRANT_COLLECTION=spam_embeddings
+ENVIRONMENT=production
+LOG_LEVEL=INFO
+DEBUG=false
+```
 
-## Pre-Release Checklist
+### Step 3: Configure Domain
 
-### Code Verification
-- [ ] All tests pass locally: `pytest`
-- [ ] Type checking passes: `mypy src/`
-- [ ] Linting passes: `ruff check .`
-- [ ] No hardcoded secrets in code
-- [ ] Database migrations reviewed and tested
+1. In Coolify, set your domain (e.g., `bot.yourdomain.com`)
+2. Enable HTTPS (Traefik handles SSL via Let's Encrypt automatically)
+3. SSL certificates are managed automatically by Coolify/Traefik
 
-### Environment Preparation
-- [ ] `.env.prod` created from `.env.example`
-- [ ] All API keys configured
-- [ ] `POSTGRES_PASSWORD` is strong and unique
-- [ ] `JWT_SECRET` is randomly generated (32+ chars)
-- [ ] `WEBHOOK_SECRET` is set
+### Step 4: Deploy
 
-### Infrastructure
-- [ ] SSL certificates placed in `docker/nginx/ssl/`
-- [ ] DNS configured to point to server IP
-- [ ] Firewall allows ports 80 and 443
-- [ ] Server has sufficient resources (2GB+ RAM recommended)
+Click "Deploy" in Coolify dashboard. The deployment will:
+1. Build the bot image from Dockerfile
+2. Start PostgreSQL, Redis, Qdrant services
+3. Wait for healthchecks to pass
+4. Start the bot container
 
----
+### Step 5: Post-Deployment Setup
 
-## Release Procedure
-
-### Step 1: Prepare the Server
+After successful deployment, run these commands via Coolify terminal or SSH:
 
 ```bash
-# SSH into production server
-ssh user@your-server
-
-# Create deployment directory
-sudo mkdir -p /opt/saqshy
-sudo chown $USER:$USER /opt/saqshy
-cd /opt/saqshy
-
-# Clone or update repository
-git clone https://github.com/nauanbek/saqshy.git .
-# OR if updating:
-git pull origin main
-```
-
-### Step 2: Configure Environment
-
-```bash
-# Copy environment template
-cp .env.example .env.prod
-
-# Edit with production values
-nano .env.prod
-
-# Required changes:
-# - TELEGRAM_BOT_TOKEN=<real token>
-# - ANTHROPIC_API_KEY=<real key>
-# - COHERE_API_KEY=<real key>
-# - POSTGRES_PASSWORD=<strong password>
-# - JWT_SECRET=<random 32+ char string>
-# - WEBHOOK_BASE_URL=https://your-domain.com
-# - ENVIRONMENT=production
-# - DEBUG=false
-```
-
-### Step 3: Setup SSL Certificates
-
-```bash
-# Option A: Using Let's Encrypt (recommended)
-sudo apt install certbot
-sudo certbot certonly --standalone -d your-domain.com
-
-# Copy certificates
-sudo cp /etc/letsencrypt/live/your-domain.com/fullchain.pem docker/nginx/ssl/cert.pem
-sudo cp /etc/letsencrypt/live/your-domain.com/privkey.pem docker/nginx/ssl/key.pem
-sudo chown $USER:$USER docker/nginx/ssl/*.pem
-
-# Option B: Self-signed (for testing only)
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout docker/nginx/ssl/key.pem \
-  -out docker/nginx/ssl/cert.pem \
-  -subj "/CN=your-domain.com"
-```
-
-### Step 4: Build Frontend
-
-```bash
-cd mini_app_frontend
-npm install
-npm run build
-cd ..
-```
-
-### Step 5: Build and Start Services
-
-```bash
-# Build the bot image
-docker compose -f docker/docker-compose.prod.yml build
-
-# Start all services
-docker compose -f docker/docker-compose.prod.yml up -d
-
-# Verify services are running
-docker compose -f docker/docker-compose.prod.yml ps
-```
-
-### Step 6: Run Database Migrations
-
-```bash
-# Wait for database to be ready (healthcheck should pass)
-sleep 10
-
-# Run migrations
+# Run database migrations
 docker compose -f docker/docker-compose.prod.yml exec bot alembic upgrade head
-```
 
-### Step 7: Seed Spam Database (First Deploy Only)
-
-```bash
+# Seed spam database (first deploy only)
 docker compose -f docker/docker-compose.prod.yml exec bot python scripts/seed_spam_db.py
 ```
 
-### Step 8: Configure Telegram Webhook
+### Step 6: Configure Telegram Webhook
 
 ```bash
 # Set webhook URL
@@ -167,14 +84,14 @@ curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
 curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getWebhookInfo"
 ```
 
-### Step 9: Verify Deployment
+### Step 7: Verify Deployment
 
 ```bash
 # Check health endpoint
-curl -k https://your-domain.com/health
+curl https://your-domain.com/health
 
-# Check logs for errors
-docker compose -f docker/docker-compose.prod.yml logs -f bot
+# Check detailed health
+curl https://your-domain.com/health/ready
 
 # Test Mini App access
 curl -I https://your-domain.com/app/
@@ -182,14 +99,31 @@ curl -I https://your-domain.com/app/
 
 ---
 
-## Rollback Procedure
+## Pre-Release Checklist
 
-If something goes wrong, follow these steps to rollback:
+### Code Verification
+- [ ] All tests pass locally: `pytest`
+- [ ] Type checking passes: `mypy src/`
+- [ ] Linting passes: `ruff check .`
+- [ ] No hardcoded secrets in code
+- [ ] Database migrations reviewed and tested
+
+### Environment Preparation
+- [ ] All environment variables configured in Coolify dashboard
+- [ ] `POSTGRES_PASSWORD` is strong and unique
+- [ ] `JWT_SECRET` is randomly generated (32+ chars)
+- [ ] `WEBHOOK_SECRET` is set
+- [ ] Domain configured in Coolify
+
+---
+
+## Rollback Procedure
 
 ### Quick Rollback (Same Version)
 
 ```bash
-# Restart services
+# Restart services via Coolify dashboard
+# Or manually:
 docker compose -f docker/docker-compose.prod.yml restart
 
 # If that doesn't work, recreate containers
@@ -199,6 +133,10 @@ docker compose -f docker/docker-compose.prod.yml up -d
 
 ### Rollback to Previous Version
 
+1. In Coolify, go to Deployments history
+2. Click "Rollback" on the previous successful deployment
+3. Alternatively, manually:
+
 ```bash
 # 1. Stop current deployment
 docker compose -f docker/docker-compose.prod.yml down
@@ -207,9 +145,7 @@ docker compose -f docker/docker-compose.prod.yml down
 git log --oneline -10  # Find the previous good commit
 git checkout <previous-commit-hash>
 
-# 3. Rebuild and restart
-docker compose -f docker/docker-compose.prod.yml build
-docker compose -f docker/docker-compose.prod.yml up -d
+# 3. Redeploy via Coolify
 ```
 
 ### Database Rollback
@@ -244,30 +180,31 @@ curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/deleteWebhook"
 
 ### View Logs
 
+In Coolify dashboard, go to "Logs" tab. Or via SSH:
+
 ```bash
 # All services
 docker compose -f docker/docker-compose.prod.yml logs -f
 
 # Specific service
 docker compose -f docker/docker-compose.prod.yml logs -f bot
-docker compose -f docker/docker-compose.prod.yml logs -f nginx
 docker compose -f docker/docker-compose.prod.yml logs -f postgres
 ```
 
 ### Health Checks
 
 ```bash
-# Bot health
+# Bot health (via domain)
 curl https://your-domain.com/health
+
+# Bot readiness (checks all dependencies)
+curl https://your-domain.com/health/ready
 
 # PostgreSQL
 docker compose -f docker/docker-compose.prod.yml exec postgres pg_isready -U saqshy
 
 # Redis
 docker compose -f docker/docker-compose.prod.yml exec redis redis-cli ping
-
-# Qdrant
-curl http://localhost:6333/readyz  # Internal only
 ```
 
 ### Resource Usage
@@ -318,55 +255,42 @@ curl "http://localhost:6333/collections/spam_embeddings/snapshots"
 
 ---
 
-## SSL Certificate Renewal
-
-### Automated (Recommended)
-
-```bash
-# Add to crontab
-0 0 1 * * certbot renew --quiet && \
-  cp /etc/letsencrypt/live/your-domain.com/fullchain.pem /opt/saqshy/docker/nginx/ssl/cert.pem && \
-  cp /etc/letsencrypt/live/your-domain.com/privkey.pem /opt/saqshy/docker/nginx/ssl/key.pem && \
-  docker compose -f /opt/saqshy/docker/docker-compose.prod.yml exec nginx nginx -s reload
-```
-
-### Manual
-
-```bash
-sudo certbot renew
-sudo cp /etc/letsencrypt/live/your-domain.com/fullchain.pem docker/nginx/ssl/cert.pem
-sudo cp /etc/letsencrypt/live/your-domain.com/privkey.pem docker/nginx/ssl/key.pem
-docker compose -f docker/docker-compose.prod.yml exec nginx nginx -s reload
-```
-
----
-
 ## Troubleshooting
 
 ### Bot Not Responding
 
 1. Check webhook status: `curl https://api.telegram.org/bot<TOKEN>/getWebhookInfo`
-2. Check bot logs: `docker compose logs bot`
+2. Check bot logs in Coolify dashboard
 3. Verify health: `curl https://your-domain.com/health`
-4. Check Nginx logs: `docker compose logs nginx`
+4. Check Traefik routing in Coolify
 
 ### Database Connection Issues
 
 1. Check PostgreSQL: `docker compose exec postgres pg_isready`
-2. Verify connection string in `.env.prod`
+2. Verify DATABASE_URL in Coolify environment variables
 3. Check PostgreSQL logs: `docker compose logs postgres`
 
 ### High Memory Usage
 
 1. Check stats: `docker stats`
 2. Restart specific service: `docker compose restart bot`
-3. Consider increasing server resources
+3. Check resource limits in docker-compose.prod.yml
 
-### SSL Certificate Errors
+### Deployment Fails with "port already allocated"
 
-1. Verify certificate paths in nginx.conf
-2. Check certificate validity: `openssl x509 -in docker/nginx/ssl/cert.pem -noout -dates`
-3. Renew if expired
+This should not happen with current configuration. If it does:
+1. Verify `docker-compose.prod.yml` uses `expose:` not `ports:` for bot service
+2. Check no other services are binding to the same port
+3. Restart Coolify/Traefik if needed
+
+---
+
+## Important Notes
+
+- **SSL/TLS**: Handled automatically by Coolify/Traefik via Let's Encrypt
+- **Port binding**: Do NOT use `ports:` directive in docker-compose.prod.yml - use `expose:` instead
+- **Environment variables**: Injected via Coolify dashboard, not `.env.prod` file
+- **Container naming**: Do NOT use `container_name:` directive - Coolify manages naming
 
 ---
 

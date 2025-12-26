@@ -27,6 +27,7 @@ from saqshy.core.constants import (
     TECH_WEIGHT_OVERRIDES,
     THRESHOLDS,
 )
+from saqshy.core.sandbox import TRUST_SCORE_ADJUSTMENTS, TrustLevel
 from saqshy.core.types import (
     BehaviorSignals,
     ContentSignals,
@@ -65,17 +66,33 @@ class RiskCalculator:
 
     The calculator applies group-type-specific weights and thresholds
     to produce a verdict for each message.
+
+    Trust Level Integration:
+        The calculator applies TRUST_SCORE_ADJUSTMENTS based on user's trust level:
+        - ESTABLISHED: -20 (significantly reduces risk)
+        - TRUSTED: -10 (reduces risk)
+        - PROVISIONAL: 0 (neutral)
+        - UNTRUSTED: +5 (slightly increases risk)
+
+        This allows trusted users to have lower risk scores.
     """
 
-    def __init__(self, group_type: GroupType = GroupType.GENERAL):
+    def __init__(
+        self,
+        group_type: GroupType = GroupType.GENERAL,
+        trust_level: TrustLevel = TrustLevel.UNTRUSTED,
+    ):
         """
         Initialize the risk calculator.
 
         Args:
             group_type: The type of group, affects weights and thresholds.
+            trust_level: User's trust level, affects score adjustment.
         """
         self.group_type = group_type
+        self.trust_level = trust_level
         self._load_weights()
+        self._validate_weights()
 
     def _load_weights(self) -> None:
         """Load and adjust weights based on group type."""
@@ -92,6 +109,36 @@ class RiskCalculator:
             self.content_weights.update(CRYPTO_WEIGHT_OVERRIDES)
         elif self.group_type == GroupType.TECH:
             self.content_weights.update(TECH_WEIGHT_OVERRIDES)
+
+    def _validate_weights(self) -> None:
+        """
+        Validate all weight values are reasonable.
+
+        Raises:
+            ValueError: If any weight has unreasonable magnitude (>100).
+            TypeError: If any weight is not numeric.
+        """
+        all_weights = [
+            ("profile", self.profile_weights),
+            ("content", self.content_weights),
+            ("behavior", self.behavior_weights),
+            ("network", self.network_weights),
+        ]
+
+        for category, weights in all_weights:
+            for key, value in weights.items():
+                if not isinstance(value, (int, float)):
+                    raise TypeError(
+                        f"Weight '{category}.{key}' must be numeric, got {type(value).__name__}"
+                    )
+                if abs(value) > 100:
+                    raise ValueError(
+                        f"Weight '{category}.{key}' has unreasonable magnitude: {value}"
+                    )
+
+        # Validate group type has thresholds defined
+        if self.group_type not in THRESHOLDS:
+            raise ValueError(f"Unknown group_type: {self.group_type}")
 
     def calculate(self, signals: Signals) -> RiskResult:
         """
@@ -118,6 +165,21 @@ class RiskCalculator:
             + breakdown.behavior_score
             + breakdown.network_score
         )
+
+        # Apply trust level adjustment
+        trust_adjustment = TRUST_SCORE_ADJUSTMENTS.get(self.trust_level.value, 0)
+        raw_score += trust_adjustment
+
+        # Record trust adjustment in breakdown
+        if trust_adjustment != 0:
+            if trust_adjustment < 0:
+                breakdown.mitigating_factors.append(
+                    f"Trust level: {self.trust_level.value} ({trust_adjustment})"
+                )
+            else:
+                breakdown.contributing_factors.append(
+                    f"Trust level: {self.trust_level.value} (+{trust_adjustment})"
+                )
 
         # Clamp to 0-100 range
         final_score = max(0, min(100, raw_score))

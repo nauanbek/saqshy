@@ -9,11 +9,18 @@ Components:
 - constants: Weights, thresholds, and configuration values
 - risk_calculator: Risk score calculation
 - sandbox: Sandbox and Soft Watch mode logic
-- logging: Structured logging with correlation IDs
+- protocols: Abstract interfaces for dependency injection
+- log_facade: Lightweight logging facade (stdlib-only)
+- logging: Structured logging with correlation IDs (uses structlog for config)
 - metrics: Metrics collection for observability
 - audit: Decision audit trail
 
-Note: ActionEngine moved to bot/ module (has aiogram dependency)
+Architecture Note:
+    core/ now has ZERO external dependencies beyond stdlib.
+    All Telegram operations are abstracted via ChatRestrictionsProtocol.
+    All logging in core modules uses LoggerProtocol via log_facade.
+
+Note: ActionEngine and TelegramRestrictionsAdapter are in bot/ module.
 """
 
 from saqshy.core.audit import (
@@ -29,6 +36,13 @@ from saqshy.core.constants import (
     NETWORK_WEIGHTS,
     PROFILE_WEIGHTS,
     THRESHOLDS,
+)
+from saqshy.core.log_facade import (
+    StdlibLogger,
+    set_logger_factory,
+)
+from saqshy.core.log_facade import (
+    get_logger as get_facade_logger,
 )
 from saqshy.core.logging import (
     LogContext,
@@ -46,10 +60,18 @@ from saqshy.core.metrics import (
     VerdictMetrics,
     check_alerts,
 )
+from saqshy.core.protocols import (
+    CacheProtocol,
+    ChannelSubscriptionProtocol,
+    ChatRestrictionsProtocol,
+    LoggerProtocol,
+    TelegramOperationError,
+)
 from saqshy.core.sandbox import (
     DEFAULT_APPROVED_MESSAGES_TO_RELEASE,
     DEFAULT_SANDBOX_DURATION_HOURS,
     DEFAULT_SOFT_WATCH_DURATION_HOURS,
+    SOFT_WATCH_THRESHOLDS,
     TRUST_SCORE_ADJUSTMENTS,
     ReleaseReason,
     SandboxConfig,
@@ -86,6 +108,16 @@ __all__ = [
     "BEHAVIOR_WEIGHTS",
     "NETWORK_WEIGHTS",
     "DEALS_WEIGHT_OVERRIDES",
+    # Protocols
+    "LoggerProtocol",
+    "CacheProtocol",
+    "ChannelSubscriptionProtocol",
+    "ChatRestrictionsProtocol",
+    "TelegramOperationError",
+    # Log Facade
+    "StdlibLogger",
+    "get_facade_logger",
+    "set_logger_factory",
     # Sandbox
     "SandboxStatus",
     "TrustLevel",
@@ -101,6 +133,7 @@ __all__ = [
     "DEFAULT_SOFT_WATCH_DURATION_HOURS",
     "DEFAULT_APPROVED_MESSAGES_TO_RELEASE",
     "TRUST_SCORE_ADJUSTMENTS",
+    "SOFT_WATCH_THRESHOLDS",
     # Logging
     "configure_logging",
     "get_logger",

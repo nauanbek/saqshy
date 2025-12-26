@@ -33,33 +33,32 @@ Redis Key Schema:
     saqshy:sandbox:{chat_id}:{user_id}     # JSON SandboxState, TTL = duration
     saqshy:trust:{chat_id}:{user_id}       # String trust level, TTL = 30 days
     saqshy:softwatch:{chat_id}:{user_id}   # JSON soft watch state
+
+Architecture Note:
+    This module has ZERO external dependencies beyond stdlib.
+    All Telegram operations are delegated via ChatRestrictionsProtocol.
+    All logging uses LoggerProtocol from log_facade.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar
 
-import structlog
-from aiogram.exceptions import (
-    TelegramAPIError,
-    TelegramBadRequest,
-    TelegramForbiddenError,
-    TelegramNetworkError,
-    TelegramRetryAfter,
+from saqshy.core.log_facade import get_logger
+from saqshy.core.protocols import (
+    CacheProtocol,
+    ChannelSubscriptionProtocol,
+    ChatRestrictionsProtocol,
+    LoggerProtocol,
+    TelegramOperationError,
 )
-
 from saqshy.core.types import GroupType, RiskResult, Verdict
 
 if TYPE_CHECKING:
-    from aiogram import Bot
-
-    from saqshy.services.cache import CacheService
-    from saqshy.services.channel_subscription import ChannelSubscriptionService
-
-logger = structlog.get_logger(__name__)
+    pass
 
 
 # =============================================================================
@@ -117,7 +116,7 @@ class StateSerializationMixin:
     - Optional fields with None values
 
     Usage:
-        @dataclass
+        @dataclass(frozen=True)
         class MyState(StateSerializationMixin):
             user_id: int
             created_at: datetime
@@ -203,17 +202,22 @@ class ReleaseReason(str, Enum):
 
 
 # =============================================================================
-# Data Classes
+# Data Classes (Immutable)
 # =============================================================================
 
 
-@dataclass
+@dataclass(frozen=True)
 class SandboxState(StateSerializationMixin):
     """
-    Current sandbox state for a user in a group.
+    Immutable sandbox state for a user in a group.
 
     This state is persisted in Redis and used to track user progression
-    through the sandbox system.
+    through the sandbox system. Being frozen ensures thread-safety
+    and prevents accidental mutations.
+
+    Use with_* methods to create modified copies:
+        new_state = state.with_message_recorded(approved=True)
+        released_state = state.with_released("time_expired")
 
     Attributes:
         user_id: Telegram user ID.
@@ -243,9 +247,19 @@ class SandboxState(StateSerializationMixin):
     violations: int = 0
 
     def __post_init__(self) -> None:
-        """Set default expiry if not provided."""
+        """Set default expiry and validate fields."""
+        # For frozen dataclass, use object.__setattr__ for initialization
         if self.expires_at is None:
-            self.expires_at = self.entered_at + timedelta(hours=DEFAULT_SANDBOX_DURATION_HOURS)
+            default_expiry = self.entered_at + timedelta(hours=DEFAULT_SANDBOX_DURATION_HOURS)
+            object.__setattr__(self, "expires_at", default_expiry)
+
+        # Validation
+        if self.messages_sent < 0:
+            raise ValueError("messages_sent cannot be negative")
+        if self.approved_messages < 0:
+            raise ValueError("approved_messages cannot be negative")
+        if self.violations < 0:
+            raise ValueError("violations cannot be negative")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SandboxState:
@@ -275,6 +289,44 @@ class SandboxState(StateSerializationMixin):
             return timedelta(hours=DEFAULT_SANDBOX_DURATION_HOURS)
         remaining = self.expires_at - datetime.now(UTC)
         return max(remaining, timedelta(0))
+
+    # =========================================================================
+    # Immutable Update Methods
+    # =========================================================================
+
+    def with_message_recorded(self, approved: bool) -> SandboxState:
+        """
+        Return new state with message recorded.
+
+        Args:
+            approved: Whether the message was approved (not spam).
+
+        Returns:
+            New SandboxState with updated counters.
+        """
+        return replace(
+            self,
+            messages_sent=self.messages_sent + 1,
+            approved_messages=self.approved_messages + (1 if approved else 0),
+            violations=self.violations + (0 if approved else 1),
+        )
+
+    def with_released(self, reason: str) -> SandboxState:
+        """
+        Return new state marked as released.
+
+        Args:
+            reason: Reason for release (from ReleaseReason enum values).
+
+        Returns:
+            New SandboxState marked as released.
+        """
+        return replace(
+            self,
+            is_released=True,
+            release_reason=reason,
+            status=SandboxStatus.RELEASED,
+        )
 
 
 @dataclass
@@ -340,12 +392,13 @@ class SoftWatchVerdict:
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class SoftWatchState(StateSerializationMixin):
     """
-    Soft watch state for a user in a deals group.
+    Immutable soft watch state for a user in a deals group.
 
     Tracks behavior without applying restrictions.
+    Use with_* methods to create modified copies.
     """
 
     user_id: int
@@ -358,9 +411,18 @@ class SoftWatchState(StateSerializationMixin):
     is_completed: bool = False
 
     def __post_init__(self) -> None:
-        """Set default expiry if not provided."""
+        """Set default expiry and validate fields."""
         if self.expires_at is None:
-            self.expires_at = self.entered_at + timedelta(hours=DEFAULT_SOFT_WATCH_DURATION_HOURS)
+            default_expiry = self.entered_at + timedelta(hours=DEFAULT_SOFT_WATCH_DURATION_HOURS)
+            object.__setattr__(self, "expires_at", default_expiry)
+
+        # Validation
+        if self.messages_sent < 0:
+            raise ValueError("messages_sent cannot be negative")
+        if self.messages_flagged < 0:
+            raise ValueError("messages_flagged cannot be negative")
+        if self.spam_db_matches < 0:
+            raise ValueError("spam_db_matches cannot be negative")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SoftWatchState:
@@ -376,6 +438,32 @@ class SoftWatchState(StateSerializationMixin):
             is_completed=data.get("is_completed", False),
         )
 
+    def with_message_recorded(
+        self,
+        flagged: bool = False,
+        spam_db_match: bool = False,
+    ) -> SoftWatchState:
+        """
+        Return new state with message recorded.
+
+        Args:
+            flagged: Whether the message was flagged as suspicious.
+            spam_db_match: Whether message matched spam DB.
+
+        Returns:
+            New SoftWatchState with updated counters.
+        """
+        return replace(
+            self,
+            messages_sent=self.messages_sent + 1,
+            messages_flagged=self.messages_flagged + (1 if flagged else 0),
+            spam_db_matches=self.spam_db_matches + (1 if spam_db_match else 0),
+        )
+
+    def with_completed(self) -> SoftWatchState:
+        """Return new state marked as completed."""
+        return replace(self, is_completed=True)
+
 
 # =============================================================================
 # Sandbox Manager
@@ -389,9 +477,16 @@ class SandboxManager:
     This class coordinates:
     - Entering users into sandbox on first message
     - Tracking message counts and violations
-    - Applying/removing Telegram restrictions
+    - Applying/removing Telegram restrictions (via ChatRestrictionsProtocol)
     - Checking release conditions
     - Channel subscription verification
+
+    Architecture:
+        Uses protocol-based dependency injection for:
+        - CacheProtocol: Redis operations
+        - ChatRestrictionsProtocol: Telegram API calls
+        - ChannelSubscriptionProtocol: Channel membership checks
+        - LoggerProtocol: Structured logging
 
     Thread Safety:
         This class is thread-safe when used with asyncio.
@@ -403,19 +498,16 @@ class SandboxManager:
         On error, defaults to allowing the message (fail open).
 
     Example:
-        >>> from aiogram import Bot
-        >>> from saqshy.services.cache import CacheService
         >>> from saqshy.core.sandbox import SandboxManager
+        >>> from saqshy.services.cache import CacheService
+        >>> from saqshy.bot.adapters import TelegramRestrictionsAdapter
         >>>
-        >>> bot = Bot(token="...")
         >>> cache = CacheService(redis_url="redis://localhost:6379")
-        >>> manager = SandboxManager(cache_service=cache, bot=bot)
+        >>> restrictions = TelegramRestrictionsAdapter(bot)
+        >>> manager = SandboxManager(cache, restrictions)
         >>>
         >>> # Put user in sandbox
         >>> state = await manager.enter_sandbox(user_id=123, chat_id=-100456)
-        >>>
-        >>> # Check if sandboxed
-        >>> is_sandboxed = await manager.is_sandboxed(user_id=123, chat_id=-100456)
         >>>
         >>> # Record a message
         >>> state = await manager.record_message(
@@ -425,22 +517,24 @@ class SandboxManager:
 
     def __init__(
         self,
-        cache_service: CacheService,
-        bot: Bot,
-        channel_subscription_service: ChannelSubscriptionService | None = None,
+        cache: CacheProtocol,
+        restrictions: ChatRestrictionsProtocol | None = None,
+        channel_subscription: ChannelSubscriptionProtocol | None = None,
+        logger: LoggerProtocol | None = None,
     ) -> None:
         """
         Initialize the sandbox manager.
 
         Args:
-            cache_service: Redis cache service for state persistence.
-            bot: aiogram Bot instance for Telegram API calls.
-            channel_subscription_service: Optional service for checking
-                channel subscriptions (strongest trust signal).
+            cache: Cache service for state persistence (required).
+            restrictions: Adapter for Telegram restrictions (optional).
+            channel_subscription: Service for channel subscription checks (optional).
+            logger: Logger instance (optional, uses default if not provided).
         """
-        self._cache = cache_service
-        self._bot = bot
-        self._channel_service = channel_subscription_service
+        self._cache = cache
+        self._restrictions = restrictions
+        self._channel_service = channel_subscription
+        self._logger = logger or get_logger(__name__)
 
     # =========================================================================
     # Redis Key Management
@@ -489,7 +583,7 @@ class SandboxManager:
         Returns:
             SandboxState with current status.
         """
-        log = logger.bind(user_id=user_id, chat_id=chat_id, group_type=group_type.value)
+        log = self._logger.bind(user_id=user_id, chat_id=chat_id, group_type=group_type.value)
 
         # Check if user is already sandboxed
         existing_state = await self._validate_sandbox_entry(user_id, chat_id, log)
@@ -531,7 +625,7 @@ class SandboxManager:
         self,
         user_id: int,
         chat_id: int,
-        log: structlog.BoundLogger,
+        log: LoggerProtocol,
     ) -> SandboxState | None:
         """
         Validate if user can enter sandbox.
@@ -557,7 +651,7 @@ class SandboxManager:
         user_id: int,
         chat_id: int,
         linked_channel_id: int | None,
-        log: structlog.BoundLogger,
+        log: LoggerProtocol,
     ) -> SandboxState | None:
         """
         Check if user should bypass sandbox due to channel subscription.
@@ -654,8 +748,17 @@ class SandboxManager:
         Args:
             state: Current SandboxState.
         """
-        if state.status == SandboxStatus.ACTIVE:
-            await self.apply_sandbox_restrictions(state.user_id, state.chat_id)
+        if state.status == SandboxStatus.ACTIVE and self._restrictions:
+            try:
+                await self._restrictions.apply_sandbox_restrictions(state.user_id, state.chat_id)
+            except TelegramOperationError as e:
+                self._logger.warning(
+                    "apply_restrictions_failed",
+                    user_id=state.user_id,
+                    chat_id=state.chat_id,
+                    error_type=e.error_type,
+                )
+                # Fail open - continue without restrictions
 
     # =========================================================================
     # Sandbox State Management
@@ -713,7 +816,7 @@ class SandboxManager:
         try:
             return SandboxState.from_dict(data)
         except (KeyError, ValueError) as e:
-            logger.warning(
+            self._logger.warning(
                 "invalid_sandbox_state",
                 key=key,
                 error=str(e),
@@ -748,9 +851,9 @@ class SandboxManager:
 
         This method:
         1. Gets current sandbox state
-        2. Increments message counters
+        2. Creates new state with updated counters
         3. Checks if user should be released
-        4. Updates Redis state
+        4. Saves new state to Redis
         5. Removes restrictions if released
 
         Args:
@@ -768,37 +871,34 @@ class SandboxManager:
         if state.is_released:
             return state
 
-        # Update counters
-        state.messages_sent += 1
-        if approved:
-            state.approved_messages += 1
-        else:
-            state.violations += 1
+        # Create new immutable state with updated counters
+        new_state = state.with_message_recorded(approved)
 
         # Check release conditions
-        should_release, reason = await self._check_release_conditions(state)
-        if should_release:
-            state.is_released = True
-            state.release_reason = reason
-            state.status = SandboxStatus.RELEASED
+        should_release, reason = await self._check_release_conditions(new_state)
+        if should_release and reason:
+            new_state = new_state.with_released(reason)
 
             # Remove restrictions
-            if state.status != SandboxStatus.SOFT_WATCH:
-                await self.remove_sandbox_restrictions(user_id, chat_id)
+            if state.status != SandboxStatus.SOFT_WATCH and self._restrictions:
+                try:
+                    await self._restrictions.remove_sandbox_restrictions(user_id, chat_id)
+                except TelegramOperationError:
+                    pass  # Log handled in adapter
 
-            logger.info(
+            self._logger.info(
                 "user_released_from_sandbox",
                 user_id=user_id,
                 chat_id=chat_id,
                 reason=reason,
-                messages_sent=state.messages_sent,
-                approved_messages=state.approved_messages,
+                messages_sent=new_state.messages_sent,
+                approved_messages=new_state.approved_messages,
             )
 
         # Save updated state
-        await self._save_sandbox_state(state)
+        await self._save_sandbox_state(new_state)
 
-        return state
+        return new_state
 
     async def _check_release_conditions(self, state: SandboxState) -> tuple[bool, str | None]:
         """
@@ -857,7 +957,7 @@ class SandboxManager:
         """
         state = await self.get_sandbox_state(user_id, chat_id)
         if state is None:
-            logger.debug(
+            self._logger.debug(
                 "release_failed_not_sandboxed",
                 user_id=user_id,
                 chat_id=chat_id,
@@ -865,25 +965,27 @@ class SandboxManager:
             return False
 
         if state.is_released:
-            logger.debug(
+            self._logger.debug(
                 "user_already_released",
                 user_id=user_id,
                 chat_id=chat_id,
             )
             return True
 
-        # Update state
-        state.is_released = True
-        state.release_reason = reason
-        state.status = SandboxStatus.RELEASED
+        # Create new released state
+        new_state = state.with_released(reason)
 
         # Save state
-        await self._save_sandbox_state(state)
+        await self._save_sandbox_state(new_state)
 
         # Remove Telegram restrictions
-        await self.remove_sandbox_restrictions(user_id, chat_id)
+        if self._restrictions:
+            try:
+                await self._restrictions.remove_sandbox_restrictions(user_id, chat_id)
+            except TelegramOperationError:
+                pass  # Fail silently, state is already saved
 
-        logger.info(
+        self._logger.info(
             "user_released_from_sandbox",
             user_id=user_id,
             chat_id=chat_id,
@@ -891,197 +993,6 @@ class SandboxManager:
         )
 
         return True
-
-    # =========================================================================
-    # Telegram Restrictions
-    # =========================================================================
-
-    async def apply_sandbox_restrictions(
-        self,
-        user_id: int,
-        chat_id: int,
-    ) -> bool:
-        """
-        Apply Telegram restrictions to sandboxed user.
-
-        Restrictions applied:
-        - Cannot send media messages
-        - Cannot send links/URLs
-        - Cannot forward messages
-        - Cannot add web page previews
-
-        Args:
-            user_id: Telegram user ID.
-            chat_id: Telegram chat ID.
-
-        Returns:
-            True if restrictions applied successfully.
-        """
-        try:
-            from aiogram.types import ChatPermissions
-
-            permissions = ChatPermissions(
-                can_send_messages=True,
-                can_send_audios=False,
-                can_send_documents=False,
-                can_send_photos=False,
-                can_send_videos=False,
-                can_send_video_notes=False,
-                can_send_voice_notes=False,
-                can_send_polls=False,
-                can_send_other_messages=False,
-                can_add_web_page_previews=False,
-                can_change_info=False,
-                can_invite_users=False,
-                can_pin_messages=False,
-                can_manage_topics=False,
-            )
-
-            await self._bot.restrict_chat_member(
-                chat_id=chat_id,
-                user_id=user_id,
-                permissions=permissions,
-            )
-
-            logger.info(
-                "sandbox_restrictions_applied",
-                user_id=user_id,
-                chat_id=chat_id,
-            )
-            return True
-
-        except TelegramRetryAfter as e:
-            logger.warning(
-                "apply_restrictions_rate_limited",
-                user_id=user_id,
-                chat_id=chat_id,
-                retry_after=e.retry_after,
-            )
-            return False
-        except TelegramForbiddenError as e:
-            logger.warning(
-                "apply_restrictions_no_permission",
-                user_id=user_id,
-                chat_id=chat_id,
-                error=str(e),
-            )
-            return False
-        except TelegramBadRequest as e:
-            logger.error(
-                "apply_restrictions_bad_request",
-                user_id=user_id,
-                chat_id=chat_id,
-                error=str(e),
-            )
-            return False
-        except TelegramNetworkError as e:
-            logger.error(
-                "apply_restrictions_network_error",
-                user_id=user_id,
-                chat_id=chat_id,
-                error=str(e),
-            )
-            return False
-        except TelegramAPIError as e:
-            logger.error(
-                "apply_restrictions_telegram_api_error",
-                user_id=user_id,
-                chat_id=chat_id,
-                error=str(e),
-            )
-            return False
-
-    async def remove_sandbox_restrictions(
-        self,
-        user_id: int,
-        chat_id: int,
-    ) -> bool:
-        """
-        Remove restrictions when user is released from sandbox.
-
-        Restores full permissions to the user.
-
-        Args:
-            user_id: Telegram user ID.
-            chat_id: Telegram chat ID.
-
-        Returns:
-            True if restrictions removed successfully.
-        """
-        try:
-            from aiogram.types import ChatPermissions
-
-            # Full permissions
-            permissions = ChatPermissions(
-                can_send_messages=True,
-                can_send_audios=True,
-                can_send_documents=True,
-                can_send_photos=True,
-                can_send_videos=True,
-                can_send_video_notes=True,
-                can_send_voice_notes=True,
-                can_send_polls=True,
-                can_send_other_messages=True,
-                can_add_web_page_previews=True,
-                can_change_info=False,
-                can_invite_users=True,
-                can_pin_messages=False,
-                can_manage_topics=False,
-            )
-
-            await self._bot.restrict_chat_member(
-                chat_id=chat_id,
-                user_id=user_id,
-                permissions=permissions,
-            )
-
-            logger.info(
-                "sandbox_restrictions_removed",
-                user_id=user_id,
-                chat_id=chat_id,
-            )
-            return True
-
-        except TelegramRetryAfter as e:
-            logger.warning(
-                "remove_restrictions_rate_limited",
-                user_id=user_id,
-                chat_id=chat_id,
-                retry_after=e.retry_after,
-            )
-            return False
-        except TelegramForbiddenError as e:
-            logger.warning(
-                "remove_restrictions_no_permission",
-                user_id=user_id,
-                chat_id=chat_id,
-                error=str(e),
-            )
-            return False
-        except TelegramBadRequest as e:
-            logger.error(
-                "remove_restrictions_bad_request",
-                user_id=user_id,
-                chat_id=chat_id,
-                error=str(e),
-            )
-            return False
-        except TelegramNetworkError as e:
-            logger.error(
-                "remove_restrictions_network_error",
-                user_id=user_id,
-                chat_id=chat_id,
-                error=str(e),
-            )
-            return False
-        except TelegramAPIError as e:
-            logger.error(
-                "remove_restrictions_telegram_api_error",
-                user_id=user_id,
-                chat_id=chat_id,
-                error=str(e),
-            )
-            return False
 
     # =========================================================================
     # Channel Subscription Check
@@ -1108,7 +1019,7 @@ class SandboxManager:
             True if user should exit sandbox (is subscribed).
         """
         if not self._channel_service:
-            logger.debug(
+            self._logger.debug(
                 "channel_subscription_service_not_configured",
                 user_id=user_id,
                 chat_id=chat_id,
@@ -1126,7 +1037,7 @@ class SandboxManager:
                 chat_id=chat_id,
                 reason=ReleaseReason.CHANNEL_SUBSCRIBER.value,
             )
-            logger.info(
+            self._logger.info(
                 "sandbox_exit_channel_subscriber",
                 user_id=user_id,
                 chat_id=chat_id,
@@ -1195,9 +1106,6 @@ class SoftWatchMode:
 
     Example:
         >>> from saqshy.core.sandbox import SoftWatchMode
-        >>> from saqshy.services.cache import CacheService
-        >>>
-        >>> cache = CacheService(redis_url="redis://localhost:6379")
         >>> soft_watch = SoftWatchMode(cache_service=cache)
         >>>
         >>> verdict = await soft_watch.evaluate(
@@ -1215,15 +1123,18 @@ class SoftWatchMode:
 
     def __init__(
         self,
-        cache_service: CacheService,
+        cache: CacheProtocol,
+        logger: LoggerProtocol | None = None,
     ) -> None:
         """
         Initialize soft watch mode.
 
         Args:
-            cache_service: Redis cache service for state persistence.
+            cache: Cache service for state persistence.
+            logger: Logger instance (optional).
         """
-        self._cache = cache_service
+        self._cache = cache
+        self._logger = logger or get_logger(__name__)
 
     def _soft_watch_key(self, chat_id: int, user_id: int) -> str:
         """Generate Redis key for soft watch state."""
@@ -1249,7 +1160,7 @@ class SoftWatchMode:
         try:
             return SoftWatchState.from_dict(data)
         except (KeyError, ValueError) as e:
-            logger.warning(
+            self._logger.warning(
                 "invalid_soft_watch_state",
                 key=key,
                 error=str(e),
@@ -1306,7 +1217,7 @@ class SoftWatchMode:
 
         await self._save_state(state)
 
-        logger.info(
+        self._logger.info(
             "user_entered_soft_watch",
             user_id=user_id,
             chat_id=chat_id,
@@ -1338,15 +1249,11 @@ class SoftWatchMode:
         if state is None:
             return None
 
-        state.messages_sent += 1
-        if flagged:
-            state.messages_flagged += 1
-        if spam_db_match:
-            state.spam_db_matches += 1
+        # Create new immutable state with updated counters
+        new_state = state.with_message_recorded(flagged=flagged, spam_db_match=spam_db_match)
+        await self._save_state(new_state)
 
-        await self._save_state(state)
-
-        return state
+        return new_state
 
     async def evaluate(
         self,
@@ -1449,7 +1356,7 @@ class SoftWatchMode:
         Returns:
             SoftWatchVerdict with delete action.
         """
-        logger.warning(
+        self._logger.warning(
             "soft_watch_extreme_spam",
             user_id=user_id,
             chat_id=chat_id,
@@ -1547,10 +1454,7 @@ class TrustManager:
 
     Example:
         >>> from saqshy.core.sandbox import TrustManager
-        >>> from saqshy.services.cache import CacheService
-        >>>
-        >>> cache = CacheService(redis_url="redis://localhost:6379")
-        >>> trust = TrustManager(cache_service=cache)
+        >>> trust = TrustManager(cache=cache_service)
         >>>
         >>> level = await trust.get_trust_level(user_id=123, chat_id=-100456)
         >>> adjustment = trust.get_trust_score_adjustment(level)
@@ -1564,15 +1468,18 @@ class TrustManager:
 
     def __init__(
         self,
-        cache_service: CacheService,
+        cache: CacheProtocol,
+        logger: LoggerProtocol | None = None,
     ) -> None:
         """
         Initialize trust manager.
 
         Args:
-            cache_service: Redis cache service for state persistence.
+            cache: Cache service for state persistence.
+            logger: Logger instance (optional).
         """
-        self._cache = cache_service
+        self._cache = cache
+        self._logger = logger or get_logger(__name__)
 
     def _trust_key(self, chat_id: int, user_id: int) -> str:
         """Generate Redis key for trust level."""
@@ -1598,7 +1505,7 @@ class TrustManager:
         try:
             return TrustLevel(value)
         except ValueError:
-            logger.warning(
+            self._logger.warning(
                 "invalid_trust_level",
                 key=key,
                 value=value,
@@ -1655,7 +1562,7 @@ class TrustManager:
         if verdict in (Verdict.BLOCK, Verdict.REVIEW):
             new_level = TrustLevel.UNTRUSTED
             await self.set_trust_level(user_id, chat_id, new_level)
-            logger.info(
+            self._logger.info(
                 "trust_regressed",
                 user_id=user_id,
                 chat_id=chat_id,
@@ -1670,7 +1577,7 @@ class TrustManager:
             if current in (TrustLevel.TRUSTED, TrustLevel.ESTABLISHED):
                 new_level = TrustLevel.PROVISIONAL
                 await self.set_trust_level(user_id, chat_id, new_level)
-                logger.info(
+                self._logger.info(
                     "trust_partial_regression",
                     user_id=user_id,
                     chat_id=chat_id,
@@ -1685,7 +1592,7 @@ class TrustManager:
             new_level = self._calculate_progression(current, approved_messages)
             if new_level != current:
                 await self.set_trust_level(user_id, chat_id, new_level)
-                logger.info(
+                self._logger.info(
                     "trust_progressed",
                     user_id=user_id,
                     chat_id=chat_id,
@@ -1743,13 +1650,7 @@ class TrustManager:
             Score adjustment to add to risk score.
             Negative = reduces risk, Positive = increases risk.
         """
-        adjustments = {
-            TrustLevel.ESTABLISHED: -20,
-            TrustLevel.TRUSTED: -10,
-            TrustLevel.PROVISIONAL: 0,
-            TrustLevel.UNTRUSTED: 5,
-        }
-        return adjustments.get(level, 0)
+        return TRUST_SCORE_ADJUSTMENTS.get(level.value, 0)
 
 
 # =============================================================================

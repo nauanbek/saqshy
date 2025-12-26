@@ -122,6 +122,21 @@ class ContentSignals:
     has_forward: bool = False
     forward_from_channel: bool = False
 
+    def __post_init__(self) -> None:
+        """Validate signal values."""
+        if not 0.0 <= self.caps_ratio <= 1.0:
+            raise ValueError(f"caps_ratio must be 0.0-1.0, got {self.caps_ratio}")
+        if self.text_length < 0:
+            raise ValueError("text_length cannot be negative")
+        if self.word_count < 0:
+            raise ValueError("word_count cannot be negative")
+        if self.emoji_count < 0:
+            raise ValueError("emoji_count cannot be negative")
+        if self.url_count < 0:
+            raise ValueError("url_count cannot be negative")
+        if self.unique_domains < 0:
+            raise ValueError("unique_domains cannot be negative")
+
 
 @dataclass(frozen=True)
 class BehaviorSignals:
@@ -174,6 +189,21 @@ class NetworkSignals:
     # Known lists
     is_in_global_blocklist: bool = False
     is_in_global_whitelist: bool = False
+
+    def __post_init__(self) -> None:
+        """Validate signal values."""
+        if not 0.0 <= self.spam_db_similarity <= 1.0:
+            raise ValueError(
+                f"spam_db_similarity must be 0.0-1.0, got {self.spam_db_similarity}"
+            )
+        if self.groups_in_common < 0:
+            raise ValueError("groups_in_common cannot be negative")
+        if self.duplicate_messages_in_other_groups < 0:
+            raise ValueError("duplicate_messages_in_other_groups cannot be negative")
+        if self.flagged_in_other_groups < 0:
+            raise ValueError("flagged_in_other_groups cannot be negative")
+        if self.blocked_in_other_groups < 0:
+            raise ValueError("blocked_in_other_groups cannot be negative")
 
 
 @dataclass
@@ -231,6 +261,13 @@ class RiskResult:
     # Contributing factors (for explainability)
     contributing_factors: list[str] = field(default_factory=list)
     mitigating_factors: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """Validate result values."""
+        if not 0 <= self.score <= 100:
+            raise ValueError(f"score must be 0-100, got {self.score}")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError(f"confidence must be 0.0-1.0, got {self.confidence}")
 
     def to_dict(self) -> dict[str, Any]:
         """Convert result to dictionary for serialization."""

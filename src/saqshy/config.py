@@ -59,8 +59,9 @@ class DatabaseSettings(BaseSettings):
         default=SecretStr("postgresql+asyncpg://saqshy:password@localhost:5432/saqshy"),
         description="Database connection URL",
     )
-    pool_size: int = Field(default=10, ge=1, le=100, description="Connection pool size")
-    max_overflow: int = Field(default=20, ge=0, le=100, description="Max overflow connections")
+    # Increased for medium load (10-100 RPS): base 30 + overflow 30 = 60 connections max
+    pool_size: int = Field(default=30, ge=1, le=100, description="Connection pool size")
+    max_overflow: int = Field(default=30, ge=0, le=100, description="Max overflow connections")
     pool_timeout: int = Field(default=30, ge=1, description="Pool timeout in seconds")
     echo: bool = Field(default=False, description="Echo SQL queries (for debugging)")
 
@@ -71,7 +72,8 @@ class RedisSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="REDIS_", env_file=".env", extra="ignore")
 
     url: str = Field(default="redis://localhost:6379/0", description="Redis connection URL")
-    max_connections: int = Field(default=10, ge=1, description="Max Redis connections")
+    # Increased for medium load (10-100 RPS)
+    max_connections: int = Field(default=30, ge=1, description="Max Redis connections")
     decode_responses: bool = Field(default=True, description="Decode responses as strings")
 
 

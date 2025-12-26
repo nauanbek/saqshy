@@ -1,0 +1,17 @@
+# SSL Certificates Directory
+
+Place your SSL certificates here:
+- cert.pem (or fullchain.pem)
+- key.pem (or privkey.pem)
+
+For Let's Encrypt:
+  sudo certbot certonly --standalone -d your-domain.com
+  sudo cp /etc/letsencrypt/live/your-domain.com/fullchain.pem cert.pem
+  sudo cp /etc/letsencrypt/live/your-domain.com/privkey.pem key.pem
+
+For self-signed (testing only):
+  openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout key.pem -out cert.pem \
+    -subj "/CN=localhost"
+
+IMPORTANT: Never commit actual certificates to version control!

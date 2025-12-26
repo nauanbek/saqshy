@@ -1,0 +1,225 @@
+# SAQSHY VPS Deployment
+# Deploys to production VPS via SSH
+#
+# SECURITY NOTES:
+# - Requires GitHub Actions secrets: SSH_KEY, SSH_HOST, SSH_USER, GHCR_DEPLOY_TOKEN
+# - Uses environment protection for production deployments
+# - SSH key is written via environment variable (not echoed to logs)
+# - GHCR token is securely transferred to VPS and immediately deleted after use
+
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (default: latest)'
+        required: false
+        default: 'latest'
+      skip_migrations:
+        description: 'Skip database migrations'
+        required: false
+        type: boolean
+        default: false
+  workflow_run:
+    workflows: ["Docker Build"]
+    branches: [main]
+    types:
+      - completed
+
+# Minimal permissions - this workflow only needs to read the repo
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  DEPLOY_PATH: /opt/saqshy
+
+jobs:
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    # Only run if triggered manually or if docker build succeeded
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+
+    environment:
+      name: production
+      url: https://${{ secrets.SSH_HOST }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine image tag
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "tag=${{ github.event.inputs.image_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=latest" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          # Write key without echoing to logs
+          printenv SSH_PRIVATE_KEY > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_KEY }}
+
+      - name: Deploy to VPS
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          IMAGE_TAG: ${{ steps.tag.outputs.tag }}
+          SKIP_MIGRATIONS: ${{ github.event.inputs.skip_migrations || 'false' }}
+          # Pass registry credentials as environment variables (not in script)
+          GHCR_TOKEN: ${{ secrets.GHCR_DEPLOY_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          # First, securely copy the GHCR token to the server
+          ssh -i ~/.ssh/deploy_key ${SSH_USER}@${SSH_HOST} "cat > /tmp/.ghcr_token && chmod 600 /tmp/.ghcr_token" <<< "${GHCR_TOKEN}"
+
+          # Now run deployment script (no secrets in heredoc)
+          ssh -i ~/.ssh/deploy_key ${SSH_USER}@${SSH_HOST} \
+            DEPLOY_PATH="${DEPLOY_PATH}" \
+            GHCR_USER="${GHCR_USER}" \
+            REGISTRY="${REGISTRY}" \
+            IMAGE_NAME="${IMAGE_NAME}" \
+            IMAGE_TAG="${IMAGE_TAG}" \
+            SKIP_MIGRATIONS="${SKIP_MIGRATIONS}" \
+            'bash -s' << 'DEPLOY_SCRIPT'
+          set -e
+
+          echo "=== SAQSHY Deployment Started ==="
+          echo "Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+
+          cd ${DEPLOY_PATH:-/opt/saqshy}
+
+          # Authenticate with GitHub Container Registry using pre-copied token
+          cat /tmp/.ghcr_token | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+          rm -f /tmp/.ghcr_token
+
+          # Pull new image
+          echo "Pulling image: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+          docker pull "${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+          # Tag as expected by docker-compose
+          docker tag "${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}" saqshy-bot:latest
+
+          # Create backup of current state (for rollback)
+          echo "Creating deployment backup..."
+          docker-compose -f docker/docker-compose.prod.yml ps > /tmp/saqshy_pre_deploy_state.txt || true
+
+          # Stop and recreate containers
+          echo "Restarting services..."
+          docker-compose -f docker/docker-compose.prod.yml up -d --force-recreate bot
+
+          # Wait for health check
+          echo "Waiting for health check..."
+          sleep 10
+
+          # Verify bot is healthy
+          HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' saqshy-bot-prod 2>/dev/null || echo "unknown")
+
+          if [[ "$HEALTH_STATUS" != "healthy" ]]; then
+            echo "Warning: Container not healthy yet (status: $HEALTH_STATUS)"
+            echo "Waiting additional 30 seconds..."
+            sleep 30
+            HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' saqshy-bot-prod 2>/dev/null || echo "unknown")
+          fi
+
+          if [[ "$HEALTH_STATUS" == "healthy" ]]; then
+            echo "Deployment successful! Bot is healthy."
+          else
+            echo "Warning: Bot health status is ${HEALTH_STATUS}"
+            echo "Check logs: docker logs saqshy-bot-prod"
+          fi
+
+          # Run migrations if not skipped
+          if [[ "${SKIP_MIGRATIONS}" != "true" ]]; then
+            echo "Running database migrations..."
+            docker-compose -f docker/docker-compose.prod.yml exec -T bot alembic upgrade head || {
+              echo "Warning: Migration failed, but deployment continues"
+            }
+          else
+            echo "Skipping migrations (flag set)"
+          fi
+
+          # Cleanup old images
+          echo "Cleaning up old images..."
+          docker image prune -f --filter "until=168h" || true
+
+          echo "=== Deployment Complete ==="
+          docker-compose -f docker/docker-compose.prod.yml ps
+          DEPLOY_SCRIPT
+
+      - name: Verify deployment
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key ${SSH_USER}@${SSH_HOST} << 'VERIFY_SCRIPT'
+          set -e
+          cd ${DEPLOY_PATH:-/opt/saqshy}
+
+          echo "=== Deployment Verification ==="
+
+          # Check all services
+          echo "Service status:"
+          docker-compose -f docker/docker-compose.prod.yml ps
+
+          # Test health endpoint directly
+          echo ""
+          echo "Health check via curl:"
+          curl -sf http://localhost:8080/health && echo " - Bot health: OK" || echo " - Bot health: FAIL"
+
+          # Check recent logs for errors
+          echo ""
+          echo "Recent bot logs (last 20 lines):"
+          docker logs --tail 20 saqshy-bot-prod 2>&1 | grep -v "^$" || true
+          VERIFY_SCRIPT
+
+      - name: Cleanup SSH key
+        if: always()
+        run: |
+          rm -f ~/.ssh/deploy_key
+          rm -f ~/.ssh/known_hosts
+          # Ensure no sensitive data remains
+          if [ -f ~/.ssh/deploy_key ]; then
+            shred -u ~/.ssh/deploy_key 2>/dev/null || rm -f ~/.ssh/deploy_key
+          fi
+
+  rollback:
+    name: Rollback (Manual)
+    runs-on: ubuntu-latest
+    if: failure() && github.event_name == 'workflow_dispatch'
+    needs: deploy
+
+    steps:
+      - name: Rollback instructions
+        run: |
+          echo "=== ROLLBACK REQUIRED ==="
+          echo ""
+          echo "Deployment failed. To rollback manually:"
+          echo ""
+          echo "1. SSH to VPS: ssh ${SSH_USER}@${SSH_HOST}"
+          echo "2. Navigate to: cd /opt/saqshy"
+          echo "3. Pull previous image tag and restart:"
+          echo "   docker pull ghcr.io/${{ env.IMAGE_NAME }}:<previous-sha>"
+          echo "   docker tag ghcr.io/${{ env.IMAGE_NAME }}:<previous-sha> saqshy-bot:latest"
+          echo "   docker-compose -f docker/docker-compose.prod.yml up -d --force-recreate bot"
+          echo ""
+          echo "Or use the workflow_dispatch with a specific image_tag to deploy a known-good version."

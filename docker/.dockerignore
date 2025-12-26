@@ -1,0 +1,83 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Environment files (secrets)
+.env
+.env.*
+!.env.example
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Testing
+.pytest_cache
+.coverage
+htmlcov
+.tox
+.nox
+
+# Type checking and linting
+.mypy_cache
+.ruff_cache
+.dmypy.json
+
+# Build artifacts
+*.egg-info
+dist
+build
+.eggs
+*.egg
+wheels
+
+# Virtual environments
+.venv
+venv
+ENV
+env
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# Node.js (Mini App frontend)
+node_modules
+mini_app_frontend/node_modules
+mini_app_frontend/.vite
+
+# Documentation
+docs/_build
+*.md
+!README.md
+
+# Logs
+*.log
+logs
+
+# Local development
+.DS_Store
+Thumbs.db
+*.local
+
+# Docker (avoid recursive context)
+docker/postgres_data
+docker/redis_data
+docker/qdrant_data
+docker/nginx/ssl/*.pem
+docker/nginx/ssl/*.key
+docker/nginx/ssl/*.crt
+
+# Temporary files
+tmp
+temp
+*.tmp
+*.temp

@@ -57,6 +57,7 @@ def create_dispatcher(
     cache_service: CacheService | None = None,
     spam_db: SpamDB | None = None,
     channel_subscription_service: ChannelSubscriptionService | None = None,
+    mini_app_url: str = "",
 ) -> Dispatcher:
     """
     Create and configure the dispatcher.
@@ -73,6 +74,7 @@ def create_dispatcher(
         cache_service: Redis cache service for rate limiting and caching.
         spam_db: SpamDB service for spam pattern matching.
         channel_subscription_service: Service for checking channel subscriptions.
+        mini_app_url: Base URL for the Mini App (e.g., https://domain.com/app).
 
     Returns:
         Configured Dispatcher instance.
@@ -83,6 +85,7 @@ def create_dispatcher(
     dp.workflow_data["cache_service"] = cache_service
     dp.workflow_data["spam_db"] = spam_db
     dp.workflow_data["channel_subscription_service"] = channel_subscription_service
+    dp.workflow_data["mini_app_url"] = mini_app_url
 
     # Import the main router which already includes all sub-routers
     # (commands, callbacks, members, messages) in the correct priority order

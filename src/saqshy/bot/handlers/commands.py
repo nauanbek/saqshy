@@ -43,6 +43,7 @@ async def cmd_start(
     message: Message,
     command: CommandObject,
     cache_service: CacheService | None = None,
+    mini_app_url: str = "",
 ) -> None:
     """
     Handle /start command.
@@ -60,36 +61,35 @@ async def cmd_start(
     if message.chat.type in ("group", "supergroup"):
         await _handle_start_group(message, cache_service)
     else:
-        await _handle_start_private(message, cache_service)
+        await _handle_start_private(message, cache_service, mini_app_url)
 
 
 async def _handle_start_private(
     message: Message,
     cache_service: CacheService | None,
+    mini_app_url: str = "",
 ) -> None:
     """Handle /start in private chat."""
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Add to Group",
-                    url="https://t.me/saqshy_bot?startgroup=true",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Open Settings",
-                    web_app=WebAppInfo(url="https://app.saqshy.bot"),  # Mini App URL
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="View Documentation",
-                    url="https://docs.saqshy.bot",
-                ),
-            ],
-        ]
-    )
+    # Build keyboard with optional Mini App button
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text="Add to Group",
+                url="https://t.me/saqshy_robot?startgroup=true",
+            ),
+        ],
+    ]
+
+    # Add Mini App button only if URL is configured
+    if mini_app_url:
+        buttons.append([
+            InlineKeyboardButton(
+                text="Open Settings",
+                web_app=WebAppInfo(url=mini_app_url),
+            ),
+        ])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     await message.answer(
         "<b>Welcome to SAQSHY Anti-Spam Bot</b>\n\n"
@@ -278,6 +278,7 @@ async def cmd_status(
 async def cmd_settings(
     message: Message,
     cache_service: CacheService | None = None,
+    mini_app_url: str = "",
 ) -> None:
     """
     Handle /settings command (admin only).
@@ -291,36 +292,44 @@ async def cmd_settings(
     chat_id = message.chat.id
 
     # Build settings keyboard
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Open Full Settings",
-                    web_app=WebAppInfo(url=f"https://app.saqshy.bot/group/{chat_id}"),
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Quick: General",
-                    callback_data=f"settype:general:{chat_id}",
-                ),
-                InlineKeyboardButton(
-                    text="Quick: Tech",
-                    callback_data=f"settype:tech:{chat_id}",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Quick: Deals",
-                    callback_data=f"settype:deals:{chat_id}",
-                ),
-                InlineKeyboardButton(
-                    text="Quick: Crypto",
-                    callback_data=f"settype:crypto:{chat_id}",
-                ),
-            ],
-        ]
-    )
+    buttons = []
+
+    # Add Mini App button only if URL is configured
+    if mini_app_url:
+        # Use query parameter format: ?group_id=XXX
+        settings_url = f"{mini_app_url}?group_id={chat_id}"
+        buttons.append([
+            InlineKeyboardButton(
+                text="Open Full Settings",
+                web_app=WebAppInfo(url=settings_url),
+            ),
+        ])
+
+    # Quick type selection buttons
+    buttons.extend([
+        [
+            InlineKeyboardButton(
+                text="Quick: General",
+                callback_data=f"settype:general:{chat_id}",
+            ),
+            InlineKeyboardButton(
+                text="Quick: Tech",
+                callback_data=f"settype:tech:{chat_id}",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="Quick: Deals",
+                callback_data=f"settype:deals:{chat_id}",
+            ),
+            InlineKeyboardButton(
+                text="Quick: Crypto",
+                callback_data=f"settype:crypto:{chat_id}",
+            ),
+        ],
+    ])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     settings_text = "<b>Group Settings</b>\n\n"
 

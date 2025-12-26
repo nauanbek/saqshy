@@ -299,10 +299,16 @@ async def lifespan(app: web.Application) -> AsyncIterator[None]:
     # =========================================================================
     if bot is not None:
         try:
+            # Build mini app URL from webhook base URL if not explicitly set
+            mini_app_url = settings.mini_app.url
+            if not mini_app_url and settings.webhook.base_url:
+                mini_app_url = f"{settings.webhook.base_url}/app"
+
             dispatcher = create_dispatcher(
                 cache_service=cache_service,
                 spam_db=spam_db,
                 channel_subscription_service=channel_subscription_service,
+                mini_app_url=mini_app_url,
             )
             app["dispatcher"] = dispatcher
             logger.info(

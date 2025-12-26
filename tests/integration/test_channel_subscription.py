@@ -2,13 +2,15 @@
 Integration Tests for Channel Subscription
 
 Tests the strongest trust signal in the SAQSHY system:
-- Channel subscription gives -25 trust bonus
-- Subscription duration bonuses: -5 for 7d, -10 for 30d
+- Channel subscription gives conditional trust bonus
+- Base bonus: -15 (reduced from -25 to prevent bypass attacks)
+- Duration bonuses: -5 for 7d, -10 for 30d
+- New accounts (<7 days) are capped at -10 max bonus
 - Channel subscription can enable sandbox exit
 - Integration with risk calculator
 
 These tests verify the channel subscription mechanism works correctly
-as the primary trust indicator.
+as the primary trust indicator while preventing abuse by compromised accounts.
 """
 
 import pytest
@@ -37,7 +39,8 @@ class TestChannelSubscriptionWeights:
     """Test that channel subscription weights are correctly configured."""
 
     def test_channel_subscriber_weight_is_minus_25(self):
-        """Channel subscription should give -25 trust bonus."""
+        """Channel subscription base weight is -25 in constants (applied conditionally)."""
+        # Note: The actual application may vary based on account age
         assert BEHAVIOR_WEIGHTS["is_channel_subscriber"] == -25
 
     def test_subscription_30_days_weight(self):
@@ -50,19 +53,21 @@ class TestChannelSubscriptionWeights:
 
 
 class TestChannelSubscriptionTrustBonus:
-    """Test the -25 trust bonus for channel subscribers."""
+    """Test the conditional trust bonus for channel subscribers."""
 
     def test_basic_subscription_reduces_score(self):
-        """Basic channel subscription should reduce risk score by 25."""
-        # User WITHOUT subscription
+        """Basic channel subscription should reduce risk score."""
+        # User WITHOUT subscription (established account)
         signals_no_sub = Signals(
+            profile=ProfileSignals(account_age_days=30),  # Established account
             behavior=BehaviorSignals(
                 is_channel_subscriber=False,
             ),
         )
 
-        # User WITH subscription
+        # User WITH subscription (established account)
         signals_with_sub = Signals(
+            profile=ProfileSignals(account_age_days=30),  # Established account
             behavior=BehaviorSignals(
                 is_channel_subscriber=True,
                 channel_subscription_duration_days=0,  # Just subscribed
@@ -74,13 +79,14 @@ class TestChannelSubscriptionTrustBonus:
         result_no_sub = calculator.calculate(signals_no_sub)
         result_with_sub = calculator.calculate(signals_with_sub)
 
-        # Subscription should reduce behavior score by 25
+        # Subscription should reduce behavior score by 15 (base bonus for established accounts)
         score_diff = result_no_sub.behavior_score - result_with_sub.behavior_score
-        assert score_diff == 25
+        assert score_diff == 15
 
     def test_subscription_appears_in_mitigating_factors(self):
         """Channel subscription should appear in mitigating factors."""
         signals = Signals(
+            profile=ProfileSignals(account_age_days=30),
             behavior=BehaviorSignals(
                 is_channel_subscriber=True,
                 channel_subscription_duration_days=10,
@@ -99,14 +105,16 @@ class TestSubscriptionDurationBonuses:
     def test_7_day_subscription_bonus(self):
         """7+ days subscription should give -5 additional bonus."""
         signals_fresh = Signals(
+            profile=ProfileSignals(account_age_days=30),  # Established account
             behavior=BehaviorSignals(
                 is_channel_subscriber=True,
                 channel_subscription_duration_days=3,  # Less than 7 days
-                is_first_message=False,  # Avoid extra penalty
+                is_first_message=False,
             ),
         )
 
         signals_7d = Signals(
+            profile=ProfileSignals(account_age_days=30),  # Established account
             behavior=BehaviorSignals(
                 is_channel_subscriber=True,
                 channel_subscription_duration_days=10,  # 7+ days
@@ -126,6 +134,7 @@ class TestSubscriptionDurationBonuses:
     def test_30_day_subscription_bonus(self):
         """30+ days subscription should give -10 additional bonus."""
         signals_7d = Signals(
+            profile=ProfileSignals(account_age_days=30),  # Established account
             behavior=BehaviorSignals(
                 is_channel_subscriber=True,
                 channel_subscription_duration_days=14,  # 7+ but <30 days
@@ -134,6 +143,7 @@ class TestSubscriptionDurationBonuses:
         )
 
         signals_30d = Signals(
+            profile=ProfileSignals(account_age_days=30),  # Established account
             behavior=BehaviorSignals(
                 is_channel_subscriber=True,
                 channel_subscription_duration_days=45,  # 30+ days
@@ -151,27 +161,28 @@ class TestSubscriptionDurationBonuses:
         assert score_diff == 5  # -10 vs -5 = additional -5
 
     def test_total_subscription_bonus_long_subscriber(self):
-        """Long-time subscriber gets full bonus: -25 -10 = -35."""
+        """Long-time subscriber with established account gets full bonus: -15 -10 = -25."""
         signals = Signals(
+            profile=ProfileSignals(account_age_days=30),  # Established account
             behavior=BehaviorSignals(
                 is_channel_subscriber=True,
                 channel_subscription_duration_days=60,
-                is_first_message=False,  # Avoid +8 penalty
+                is_first_message=False,
             ),
         )
 
         calculator = RiskCalculator(group_type=GroupType.GENERAL)
         result = calculator.calculate(signals)
 
-        # Total should be: is_channel_subscriber (-25) + channel_sub_30_days (-10)
-        assert result.behavior_score == -35
+        # Total should be: base (-15) + channel_sub_30_days (-10) = -25
+        assert result.behavior_score == -25
 
 
 class TestSubscriptionOffsetRisk:
     """Test that subscription can offset risk signals."""
 
     def test_subscriber_new_account_offset(self):
-        """Subscription can offset new account risk."""
+        """Subscription for new account is capped to prevent abuse."""
         # New account (high risk) but channel subscriber
         signals = Signals(
             profile=ProfileSignals(
@@ -189,10 +200,9 @@ class TestSubscriptionOffsetRisk:
         calculator = RiskCalculator(group_type=GroupType.GENERAL)
         result = calculator.calculate(signals)
 
-        # Profile: account_age_under_7_days (+15) + no_profile_photo (+8) = +23
-        # Behavior: is_channel_subscriber (-25) + channel_sub_7_days (-5) + is_first_message (+8) = -22
-        # Net should be close to 0
-        assert result.score < 30  # Still in ALLOW range
+        # New account gets capped bonus (-10 instead of -20)
+        # Score should be in WATCH range for new accounts (not ALLOW)
+        assert result.score < 50  # Still below LIMIT
 
     def test_subscriber_first_message_not_penalized_heavily(self):
         """First message from subscriber should not trigger heavy penalty."""
@@ -318,30 +328,31 @@ class TestSubscriptionVsNonSubscription:
 
     def test_same_message_different_subscription_status(self):
         """Same message should score differently based on subscription."""
-        base_signals = {
-            "profile": NEUTRAL_NEW_USER.signals,
-            "content": ContentSignals(
-                url_count=1,
-                has_money_patterns=True,
-            ),
-            "network": NETWORK_CLEAN.signals,
-        }
+        base_profile = ProfileSignals(account_age_days=30)  # Established account
+        base_content = ContentSignals(
+            url_count=1,
+            has_money_patterns=True,
+        )
 
         signals_no_sub = Signals(
-            **base_signals,
+            profile=base_profile,
+            content=base_content,
             behavior=BehaviorSignals(
-                is_first_message=False,  # Consistent for comparison
+                is_first_message=False,
                 is_channel_subscriber=False,
             ),
+            network=NETWORK_CLEAN.signals,
         )
 
         signals_with_sub = Signals(
-            **base_signals,
+            profile=base_profile,
+            content=base_content,
             behavior=BehaviorSignals(
                 is_first_message=False,
                 is_channel_subscriber=True,
                 channel_subscription_duration_days=7,
             ),
+            network=NETWORK_CLEAN.signals,
         )
 
         calculator = RiskCalculator(group_type=GroupType.GENERAL)
@@ -349,11 +360,11 @@ class TestSubscriptionVsNonSubscription:
         result_no_sub = calculator.calculate(signals_no_sub)
         result_with_sub = calculator.calculate(signals_with_sub)
 
-        # Subscriber should score lower (behavior diff: -25 -5 = -30)
+        # Subscriber should score lower (behavior diff: -15 -5 = -20)
         assert result_with_sub.score < result_no_sub.score
-        # Behavior score difference should be at least 30
+        # Behavior score difference should be at least 20
         behavior_diff = result_no_sub.behavior_score - result_with_sub.behavior_score
-        assert behavior_diff >= 30
+        assert behavior_diff >= 20
 
     def test_subscriber_verdict_upgrade(self):
         """Subscription can upgrade verdict from WATCH to ALLOW."""
@@ -398,26 +409,27 @@ class TestSubscriptionAcrossGroupTypes:
 
     @pytest.mark.parametrize("group_type", list(GroupType))
     def test_subscription_bonus_same_across_groups(self, group_type: GroupType):
-        """Subscription bonus should be same across all group types."""
+        """Subscription bonus should be same across all group types for established accounts."""
         signals = Signals(
+            profile=ProfileSignals(account_age_days=30),  # Established account
             behavior=BehaviorSignals(
                 is_channel_subscriber=True,
                 channel_subscription_duration_days=30,
-                is_first_message=False,  # Avoid +8 first message penalty
+                is_first_message=False,
             ),
         )
 
         calculator = RiskCalculator(group_type=group_type)
         result = calculator.calculate(signals)
 
-        # Behavior score should be -35 regardless of group type
-        # is_channel_subscriber (-25) + channel_sub_30_days (-10) = -35
-        assert result.behavior_score == -35
+        # Behavior score should be -25 regardless of group type
+        # base (-15) + channel_sub_30_days (-10) = -25
+        assert result.behavior_score == -25
 
     def test_subscription_more_valuable_in_crypto(self):
         """Subscription is relatively more valuable in crypto (lower thresholds)."""
         signals = Signals(
-            profile=NEUTRAL_NEW_USER.signals,
+            profile=ProfileSignals(account_age_days=14),  # Account > 7 days
             content=ContentSignals(
                 has_money_patterns=True,
             ),
@@ -435,9 +447,9 @@ class TestSubscriptionAcrossGroupTypes:
         general_result = general_calc.calculate(signals)
         crypto_result = crypto_calc.calculate(signals)
 
-        # Same score, but crypto has lower threshold (25 vs 30)
-        # So subscription is relatively more valuable in keeping score below threshold
-        assert general_result.score == crypto_result.score
+        # Both should be in ALLOW range
+        assert general_result.verdict == Verdict.ALLOW
+        assert crypto_result.verdict == Verdict.ALLOW
 
 
 class TestSubscriptionWithPreviousMessages:
@@ -460,17 +472,17 @@ class TestSubscriptionWithPreviousMessages:
         calculator = RiskCalculator(group_type=GroupType.GENERAL)
         result = calculator.calculate(signals)
 
-        # is_channel_subscriber: -25
-        # channel_sub_30_days: -10
+        # Channel subscription bonus: base (-15) + 30d duration (-10) = -25
         # previous_messages_approved_10_plus: -15
-        # Total behavior: -50
-        assert result.behavior_score == -50
+        # Total behavior: -40
+        assert result.behavior_score == -40
         assert result.verdict == Verdict.ALLOW
         assert result.score == 0  # Clamped to 0
 
     def test_subscriber_with_some_approved_messages(self):
         """Subscriber with 5+ approved messages gets moderate trust."""
         signals = Signals(
+            profile=ProfileSignals(account_age_days=30),  # Established account
             behavior=BehaviorSignals(
                 is_channel_subscriber=True,
                 channel_subscription_duration_days=14,
@@ -482,19 +494,17 @@ class TestSubscriptionWithPreviousMessages:
         calculator = RiskCalculator(group_type=GroupType.GENERAL)
         result = calculator.calculate(signals)
 
-        # is_channel_subscriber: -25
-        # channel_sub_7_days: -5
-        # previous_messages_approved_5_plus: -10
-        # Total: -40
-        assert result.behavior_score == -40
+        # base (-15) + channel_sub_7_days (-5) + previous_messages_approved_5_plus (-10) = -30
+        assert result.behavior_score == -30
 
 
 class TestSubscriptionEdgeCases:
     """Test edge cases for subscription handling."""
 
     def test_subscription_zero_days(self):
-        """Just subscribed (0 days) should only get base -25."""
+        """Just subscribed (0 days) with established account gets base -15."""
         signals = Signals(
+            profile=ProfileSignals(account_age_days=30),  # Established account
             behavior=BehaviorSignals(
                 is_channel_subscriber=True,
                 channel_subscription_duration_days=0,
@@ -505,11 +515,12 @@ class TestSubscriptionEdgeCases:
         calculator = RiskCalculator(group_type=GroupType.GENERAL)
         result = calculator.calculate(signals)
 
-        assert result.behavior_score == -25
+        assert result.behavior_score == -15
 
     def test_subscription_exactly_7_days(self):
-        """Exactly 7 days should get -5 duration bonus."""
+        """Exactly 7 days with established account gets base + duration bonus."""
         signals = Signals(
+            profile=ProfileSignals(account_age_days=30),  # Established account
             behavior=BehaviorSignals(
                 is_channel_subscriber=True,
                 channel_subscription_duration_days=7,
@@ -520,11 +531,12 @@ class TestSubscriptionEdgeCases:
         calculator = RiskCalculator(group_type=GroupType.GENERAL)
         result = calculator.calculate(signals)
 
-        assert result.behavior_score == -30  # -25 + -5
+        assert result.behavior_score == -20  # -15 + -5
 
     def test_subscription_exactly_30_days(self):
-        """Exactly 30 days should get -10 duration bonus."""
+        """Exactly 30 days with established account gets full duration bonus."""
         signals = Signals(
+            profile=ProfileSignals(account_age_days=30),  # Established account
             behavior=BehaviorSignals(
                 is_channel_subscriber=True,
                 channel_subscription_duration_days=30,
@@ -535,7 +547,7 @@ class TestSubscriptionEdgeCases:
         calculator = RiskCalculator(group_type=GroupType.GENERAL)
         result = calculator.calculate(signals)
 
-        assert result.behavior_score == -35  # -25 + -10
+        assert result.behavior_score == -25  # -15 + -10
 
     def test_not_subscriber_no_bonus(self):
         """Non-subscriber should get no bonus even with duration set."""
@@ -552,6 +564,45 @@ class TestSubscriptionEdgeCases:
 
         # No subscription bonus, just default behavior score (0)
         assert result.behavior_score == 0
+
+
+class TestNewAccountCapping:
+    """Test that new accounts have capped subscription bonus."""
+
+    def test_new_account_capped_at_minus_10(self):
+        """New account (<7 days) should be capped at -10 bonus."""
+        signals = Signals(
+            profile=ProfileSignals(account_age_days=3),  # New account
+            behavior=BehaviorSignals(
+                is_channel_subscriber=True,
+                channel_subscription_duration_days=30,  # Long subscription
+                is_first_message=False,
+            ),
+        )
+
+        calculator = RiskCalculator(group_type=GroupType.GENERAL)
+        result = calculator.calculate(signals)
+
+        # Despite long subscription, capped at -10 for new accounts
+        # Check mitigating factors mention the cap
+        assert "capped" in str(result.mitigating_factors).lower()
+
+    def test_established_account_full_bonus(self):
+        """Established account (7+ days) gets full subscription bonus."""
+        signals = Signals(
+            profile=ProfileSignals(account_age_days=7),  # Just established
+            behavior=BehaviorSignals(
+                is_channel_subscriber=True,
+                channel_subscription_duration_days=30,
+                is_first_message=False,
+            ),
+        )
+
+        calculator = RiskCalculator(group_type=GroupType.GENERAL)
+        result = calculator.calculate(signals)
+
+        # Should get full -25 bonus (base -15 + duration -10)
+        assert result.behavior_score == -25
 
 
 class TestSubscriptionSandboxExit:

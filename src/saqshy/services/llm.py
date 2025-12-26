@@ -75,12 +75,29 @@ class LLMResult:
         )
 
     @classmethod
-    def from_error(cls, error_message: str) -> LLMResult:
-        """Create an ALLOW result due to error (fail-safe)."""
+    def from_error(cls, error_message: str, current_score: int = 0) -> LLMResult:
+        """
+        Create a fallback result based on current score.
+
+        Conservative approach: higher scores get stricter verdicts on LLM failure.
+        - Score >= 55: LIMIT (likely spam, don't let it through)
+        - Score >= 40: WATCH (suspicious, log it)
+        - Score < 40: ALLOW (probably safe)
+        """
+        if current_score >= 55:
+            verdict = Verdict.LIMIT
+            reason = f"LLM failed (score={current_score}), conservative LIMIT applied"
+        elif current_score >= 40:
+            verdict = Verdict.WATCH
+            reason = f"LLM failed (score={current_score}), applying WATCH"
+        else:
+            verdict = Verdict.ALLOW
+            reason = "LLM analysis failed, defaulting to allow (low score)"
+
         return cls(
-            verdict=Verdict.ALLOW,
+            verdict=verdict,
             confidence=0.0,
-            reason="LLM analysis failed, defaulting to allow",
+            reason=reason,
             error=error_message,
         )
 
@@ -507,7 +524,7 @@ Provide your verdict as JSON only."""
         # Check circuit breaker
         if await self._circuit_breaker.is_open():
             log.warning("llm_circuit_open_skipping")
-            return LLMResult.from_error("Circuit breaker open, service degraded")
+            return LLMResult.from_error("Circuit breaker open, service degraded", current_score)
 
         # Check rate limiting
         if self._rate_tracker.is_near_limit():
@@ -577,27 +594,27 @@ Provide your verdict as JSON only."""
                 elapsed_seconds=round(elapsed, 2),
                 timeout=self.timeout,
             )
-            return LLMResult.from_error(f"Timeout after {elapsed:.1f}s")
+            return LLMResult.from_error(f"Timeout after {elapsed:.1f}s", current_score)
 
         except RateLimitError as e:
             await self._circuit_breaker.record_failure()
             log.error("llm_rate_limited", error=str(e))
-            return LLMResult.from_error("Rate limited by Anthropic API")
+            return LLMResult.from_error("Rate limited by Anthropic API", current_score)
 
         except APITimeoutError as e:
             await self._circuit_breaker.record_failure()
             log.error("llm_api_timeout", error=str(e))
-            return LLMResult.from_error(f"API timeout: {e}")
+            return LLMResult.from_error(f"API timeout: {e}", current_score)
 
         except APIError as e:
             await self._circuit_breaker.record_failure()
             log.error("llm_api_error", error=str(e), status_code=getattr(e, "status_code", None))
-            return LLMResult.from_error(f"API error: {e}")
+            return LLMResult.from_error(f"API error: {e}", current_score)
 
         except Exception as e:
             await self._circuit_breaker.record_failure()
             log.exception("llm_unexpected_error", error=str(e))
-            return LLMResult.from_error(f"Unexpected error: {type(e).__name__}")
+            return LLMResult.from_error(f"Unexpected error: {type(e).__name__}", current_score)
 
     async def close(self) -> None:
         """

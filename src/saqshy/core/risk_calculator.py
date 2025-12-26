@@ -149,7 +149,9 @@ class RiskCalculator:
         # Calculate individual category scores
         breakdown.profile_score = self._calculate_profile_score(signals.profile, breakdown)
         breakdown.content_score = self._calculate_content_score(signals.content, breakdown)
-        breakdown.behavior_score = self._calculate_behavior_score(signals.behavior, breakdown)
+        breakdown.behavior_score = self._calculate_behavior_score(
+            signals.behavior, breakdown, signals.profile
+        )
         breakdown.network_score = self._calculate_network_score(signals.network, breakdown)
 
         # Sum all scores
@@ -318,20 +320,42 @@ class RiskCalculator:
         return score
 
     def _calculate_behavior_score(
-        self, behavior: BehaviorSignals, breakdown: ScoreBreakdown
+        self,
+        behavior: BehaviorSignals,
+        breakdown: ScoreBreakdown,
+        profile: ProfileSignals | None = None,
     ) -> int:
         """Calculate behavior risk score."""
         score = 0
 
-        # Channel subscription - STRONGEST trust signal
+        # Channel subscription - conditional trust signal
+        # Reduced base bonus and capped for new accounts to prevent bypass
         if behavior.is_channel_subscriber:
-            score += self.behavior_weights.get("is_channel_subscriber", -25)
-            breakdown.mitigating_factors.append("Channel subscriber (strong trust)")
+            # Base bonus reduced from -25 to -15
+            base_bonus = -15
 
+            # Additional bonus for subscription duration
+            duration_bonus = 0
             if behavior.channel_subscription_duration_days >= 30:
-                score += self.behavior_weights.get("channel_sub_30_days", -10)
+                duration_bonus = -10  # Total: -25 for 30+ days subscriber
             elif behavior.channel_subscription_duration_days >= 7:
-                score += self.behavior_weights.get("channel_sub_7_days", -5)
+                duration_bonus = -5  # Total: -20 for 7+ days subscriber
+
+            total_bonus = base_bonus + duration_bonus
+
+            # Cap bonus for new accounts (< 7 days old) to prevent compromised account bypass
+            if profile is not None and profile.account_age_days < 7:
+                # New accounts get max -10 even if channel subscriber
+                total_bonus = max(total_bonus, -10)
+                breakdown.mitigating_factors.append(
+                    f"Channel subscriber (capped to {total_bonus} for new account)"
+                )
+            else:
+                breakdown.mitigating_factors.append(
+                    f"Channel subscriber ({total_bonus} trust bonus)"
+                )
+
+            score += total_bonus
 
         # Message history
         if behavior.previous_messages_approved >= 10:
@@ -347,6 +371,16 @@ class RiskCalculator:
             score += self.behavior_weights.get("is_reply", -3)
             if behavior.is_reply_to_admin:
                 score += self.behavior_weights.get("is_reply_to_admin", -5)
+
+        # Group membership duration - longer membership = more trust
+        if behavior.group_membership_days >= 90:
+            score += self.behavior_weights.get("group_member_90_days", -15)
+            breakdown.mitigating_factors.append("Group member for 90+ days")
+        elif behavior.group_membership_days >= 30:
+            score += self.behavior_weights.get("group_member_30_days", -10)
+            breakdown.mitigating_factors.append("Group member for 30+ days")
+        elif behavior.group_membership_days >= 7:
+            score += self.behavior_weights.get("group_member_7_days", -5)
 
         # Risk signals
         if behavior.is_first_message:
@@ -408,10 +442,23 @@ class RiskCalculator:
         elif network.spam_db_similarity >= 0.70:
             score += self.network_weights.get("spam_db_similarity_0.70_plus", 25)
 
-        # Cross-group behavior
-        if network.duplicate_messages_in_other_groups > 0:
-            score += self.network_weights.get("duplicate_across_groups", 35)
-            breakdown.contributing_factors.append("Duplicate messages in other groups")
+        # Cross-group behavior - tiered duplicate detection
+        dup_count = network.duplicate_messages_in_other_groups
+        if dup_count >= 5:
+            score += self.network_weights.get("duplicate_in_5_plus_groups", 50)
+            breakdown.contributing_factors.append(
+                f"Duplicate in {dup_count}+ groups (coordinated spam attack)"
+            )
+        elif dup_count >= 3:
+            score += self.network_weights.get("duplicate_in_3_groups", 35)
+            breakdown.contributing_factors.append(f"Duplicate in {dup_count} groups")
+        elif dup_count >= 2:
+            score += self.network_weights.get("duplicate_in_2_groups", 20)
+            breakdown.contributing_factors.append(f"Duplicate in {dup_count} groups")
+        elif dup_count > 0:
+            # Single duplicate - lower risk but still suspicious
+            score += 10
+            breakdown.contributing_factors.append("Message seen in another group")
 
         if network.blocked_in_other_groups > 0:
             score += self.network_weights.get("blocked_in_other_groups", 40)

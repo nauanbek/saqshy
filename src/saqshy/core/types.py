@@ -162,6 +162,9 @@ class BehaviorSignals:
     is_channel_subscriber: bool = False
     channel_subscription_duration_days: int = 0
 
+    # Group membership (trust signal - longer membership = more trust)
+    group_membership_days: int = 0
+
     # Interaction
     is_reply: bool = False
     is_reply_to_admin: bool = False

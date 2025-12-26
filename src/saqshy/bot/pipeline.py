@@ -521,7 +521,23 @@ class MessagePipeline:
         result = self.risk_calculator.calculate(signals)
         metrics.risk_calc_ms = (time.monotonic() - calc_start) * 1000
 
-        # Check if LLM review is needed (gray zone)
+        # Force LLM for risky first messages from unestablished users
+        # This catches sophisticated spam that evades rule-based detection
+        if (
+            signals.behavior.is_first_message
+            and signals.behavior.previous_messages_approved < 3
+            and result.score >= 25
+            and not result.needs_llm  # Don't double-set
+            and self.llm_service is not None
+        ):
+            result.needs_llm = True
+            log.info(
+                "forcing_llm_for_first_message",
+                score=result.score,
+                previous_approved=signals.behavior.previous_messages_approved,
+            )
+
+        # Check if LLM review is needed (gray zone or forced for first messages)
         if result.needs_llm and self.llm_service is not None:
             result = await self._call_llm_for_gray_zone(
                 context=context,

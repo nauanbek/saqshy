@@ -94,7 +94,7 @@ CONTENT_WEIGHTS: dict[str, int] = {
 
 BEHAVIOR_WEIGHTS: dict[str, int] = {
     # Trust signals (VERY important)
-    "is_channel_subscriber": -25,  # Strongest trust signal
+    "is_channel_subscriber": -25,  # Strongest trust signal (conditional in calculator)
     "channel_sub_30_days": -10,
     "channel_sub_7_days": -5,
     "previous_messages_approved_10_plus": -15,
@@ -102,6 +102,10 @@ BEHAVIOR_WEIGHTS: dict[str, int] = {
     "previous_messages_approved_1_plus": -5,
     "is_reply": -3,
     "is_reply_to_admin": -5,
+    # Group membership trust signals
+    "group_member_7_days": -5,
+    "group_member_30_days": -10,
+    "group_member_90_days": -15,
     # Risk signals
     "is_first_message": 8,
     "ttfm_under_30_seconds": 15,  # Time to first message
@@ -128,7 +132,11 @@ NETWORK_WEIGHTS: dict[str, int] = {
     "spam_db_similarity_0.88_plus": 45,
     "spam_db_similarity_0.80_plus": 35,
     "spam_db_similarity_0.70_plus": 25,
-    "duplicate_across_groups": 35,
+    # Tiered duplicate detection - more groups = higher risk
+    "duplicate_in_2_groups": 20,  # Message in 2 other groups
+    "duplicate_in_3_groups": 35,  # Message in 3 other groups
+    "duplicate_in_5_plus_groups": 50,  # Message in 5+ other groups (coordinated attack)
+    "duplicate_across_groups": 35,  # Deprecated: kept for backwards compatibility
     "flagged_in_other_groups": 25,
     "blocked_in_other_groups": 40,
     "is_in_global_blocklist": 50,
@@ -359,6 +367,6 @@ RATE_LIMITS: dict[str, dict[str, int]] = {
 # =============================================================================
 # Score range where LLM review is triggered
 
-LLM_GRAY_ZONE: tuple[int, int] = (60, 80)
+LLM_GRAY_ZONE: tuple[int, int] = (35, 85)  # Expanded from (60, 80) for better detection
 LLM_MAX_RETRIES: int = 2
 LLM_TIMEOUT_SECONDS: int = 10

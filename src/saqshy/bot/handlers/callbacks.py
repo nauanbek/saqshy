@@ -653,6 +653,168 @@ async def callback_dismiss(callback: CallbackQuery) -> None:
 
 
 # =============================================================================
+# Admin Feedback Callbacks (for spam detection improvement)
+# =============================================================================
+
+
+@router.callback_query(F.data.startswith("feedback:confirm:"), AdminFilter())
+async def callback_feedback_confirm(
+    callback: CallbackQuery,
+    cache_service: CacheService | None = None,
+    spam_db: SpamDB | None = None,
+) -> None:
+    """
+    Handle confirmation that blocked message was indeed spam.
+
+    Callback data format: feedback:confirm:{message_hash}:{chat_id}
+
+    Actions:
+    - Add message to spam DB for future training
+    - Track signal effectiveness
+    - Edit message to show confirmation
+    """
+    if not callback.data:
+        await callback.answer("Invalid callback data")
+        return
+
+    try:
+        parts = callback.data.split(":")
+        if len(parts) < 4:
+            await callback.answer("Invalid callback format")
+            return
+
+        message_hash = parts[2]
+        chat_id = int(parts[3])
+
+        # Record confirmation in stats
+        if cache_service:
+            stats_key = "saqshy:feedback_stats"
+            stats = await cache_service.get_json(stats_key) or {
+                "confirmed_spam": 0,
+                "false_positives": 0,
+            }
+            stats["confirmed_spam"] = stats.get("confirmed_spam", 0) + 1
+            await cache_service.set_json(stats_key, stats, ttl=86400 * 30)
+
+            # Record this message as confirmed spam for signal analysis
+            confirm_key = f"saqshy:confirmed:{message_hash}"
+            await cache_service.set(confirm_key, "spam", ttl=86400 * 7)
+
+        # Edit the notification message
+        admin_name = callback.from_user.first_name if callback.from_user else "Admin"
+        if callback.message and isinstance(callback.message, Message):
+            try:
+                new_text = callback.message.text or ""
+                new_text += f"\n\n<b>CONFIRMED SPAM</b> by {admin_name}"
+                await callback.message.edit_text(new_text, reply_markup=None)
+            except TelegramBadRequest:
+                pass
+
+        await callback.answer("Feedback recorded - confirmed as spam")
+
+        logger.info(
+            "feedback_confirmed_spam",
+            message_hash=message_hash,
+            chat_id=chat_id,
+            confirmed_by=callback.from_user.id if callback.from_user else None,
+        )
+
+    except (ValueError, IndexError) as e:
+        logger.warning("invalid_feedback_confirm_callback", error=str(e))
+        await callback.answer("Invalid callback data")
+
+
+@router.callback_query(F.data.startswith("feedback:fp:"), AdminFilter())
+async def callback_feedback_false_positive(
+    callback: CallbackQuery,
+    cache_service: CacheService | None = None,
+    spam_db: SpamDB | None = None,
+) -> None:
+    """
+    Handle report that blocked message was a false positive.
+
+    Callback data format: feedback:fp:{message_hash}:{chat_id}:{user_id}
+
+    Actions:
+    - Record false positive for signal tuning
+    - Remove from spam DB if present
+    - Track which signals caused the FP
+    - Edit message to show FP status
+    """
+    if not callback.data:
+        await callback.answer("Invalid callback data")
+        return
+
+    try:
+        parts = callback.data.split(":")
+        if len(parts) < 4:
+            await callback.answer("Invalid callback format")
+            return
+
+        message_hash = parts[2]
+        chat_id = int(parts[3])
+        user_id = int(parts[4]) if len(parts) > 4 else 0
+
+        # Record false positive in stats
+        if cache_service:
+            stats_key = "saqshy:feedback_stats"
+            stats = await cache_service.get_json(stats_key) or {
+                "confirmed_spam": 0,
+                "false_positives": 0,
+            }
+            stats["false_positives"] = stats.get("false_positives", 0) + 1
+            await cache_service.set_json(stats_key, stats, ttl=86400 * 30)
+
+            # Record this as FP for signal analysis
+            fp_key = f"saqshy:fp:{message_hash}"
+            await cache_service.set(fp_key, "fp", ttl=86400 * 7)
+
+            # Restore user trust if we have their ID
+            if user_id > 0:
+                await _update_user_trust(cache_service, user_id, "approved")
+
+        # Try to remove from spam DB if present
+        if spam_db:
+            try:
+                # Use message_hash as pattern ID to remove
+                await spam_db.remove_pattern(message_hash)
+                logger.info(
+                    "removed_fp_from_spam_db",
+                    message_hash=message_hash,
+                )
+            except Exception as e:
+                logger.debug(
+                    "remove_from_spam_db_failed",
+                    message_hash=message_hash,
+                    error=str(e),
+                )
+
+        # Edit the notification message
+        admin_name = callback.from_user.first_name if callback.from_user else "Admin"
+        if callback.message and isinstance(callback.message, Message):
+            try:
+                new_text = callback.message.text or ""
+                new_text += f"\n\n<b>FALSE POSITIVE</b> reported by {admin_name}"
+                await callback.message.edit_text(new_text, reply_markup=None)
+            except TelegramBadRequest:
+                pass
+
+        await callback.answer("Feedback recorded - marked as false positive")
+
+        logger.info(
+            "feedback_false_positive",
+            message_hash=message_hash,
+            chat_id=chat_id,
+            user_id=user_id,
+            reported_by=callback.from_user.id if callback.from_user else None,
+        )
+
+    except (ValueError, IndexError) as e:
+        logger.warning("invalid_feedback_fp_callback", error=str(e))
+        await callback.answer("Invalid callback data")
+
+
+# =============================================================================
 # Helper Functions
 # =============================================================================
 

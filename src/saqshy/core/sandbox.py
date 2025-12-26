@@ -245,6 +245,7 @@ class SandboxState(StateSerializationMixin):
     release_reason: str | None = None
     status: SandboxStatus = SandboxStatus.ACTIVE
     violations: int = 0
+    version: int = 0  # Optimistic locking version for race condition prevention
 
     def __post_init__(self) -> None:
         """Set default expiry and validate fields."""
@@ -275,6 +276,7 @@ class SandboxState(StateSerializationMixin):
             release_reason=data.get("release_reason"),
             status=SandboxStatus(data.get("status", "active")),
             violations=data.get("violations", 0),
+            version=data.get("version", 0),
         )
 
     def is_expired(self) -> bool:
@@ -298,17 +300,20 @@ class SandboxState(StateSerializationMixin):
         """
         Return new state with message recorded.
 
+        Increments version for optimistic locking.
+
         Args:
             approved: Whether the message was approved (not spam).
 
         Returns:
-            New SandboxState with updated counters.
+            New SandboxState with updated counters and incremented version.
         """
         return replace(
             self,
             messages_sent=self.messages_sent + 1,
             approved_messages=self.approved_messages + (1 if approved else 0),
             violations=self.violations + (0 if approved else 1),
+            version=self.version + 1,
         )
 
     def with_released(self, reason: str) -> SandboxState:
@@ -845,60 +850,123 @@ class SandboxManager:
         user_id: int,
         chat_id: int,
         approved: bool,
+        max_retries: int = 3,
     ) -> SandboxState | None:
         """
         Record a message and check for release conditions.
 
+        Uses optimistic locking with retry to prevent race conditions
+        when multiple messages are processed concurrently.
+
         This method:
         1. Gets current sandbox state
-        2. Creates new state with updated counters
+        2. Creates new state with updated counters and incremented version
         3. Checks if user should be released
-        4. Saves new state to Redis
-        5. Removes restrictions if released
+        4. Saves new state to Redis (with version check)
+        5. Retries on version conflict
+        6. Removes restrictions if released
 
         Args:
             user_id: Telegram user ID.
             chat_id: Telegram chat ID.
             approved: Whether the message was approved (not spam).
+            max_retries: Maximum retry attempts on version conflict.
 
         Returns:
             Updated SandboxState or None if not sandboxed.
         """
-        state = await self.get_sandbox_state(user_id, chat_id)
-        if state is None:
-            return None
+        for attempt in range(max_retries):
+            state = await self.get_sandbox_state(user_id, chat_id)
+            if state is None:
+                return None
 
-        if state.is_released:
-            return state
+            if state.is_released:
+                return state
 
-        # Create new immutable state with updated counters
-        new_state = state.with_message_recorded(approved)
+            original_version = state.version
 
-        # Check release conditions
-        should_release, reason = await self._check_release_conditions(new_state)
-        if should_release and reason:
-            new_state = new_state.with_released(reason)
+            # Create new immutable state with updated counters
+            new_state = state.with_message_recorded(approved)
 
-            # Remove restrictions
-            if state.status != SandboxStatus.SOFT_WATCH and self._restrictions:
-                try:
-                    await self._restrictions.remove_sandbox_restrictions(user_id, chat_id)
-                except TelegramOperationError:
-                    pass  # Log handled in adapter
+            # Check release conditions
+            should_release, reason = await self._check_release_conditions(new_state)
+            if should_release and reason:
+                new_state = new_state.with_released(reason)
 
-            self._logger.info(
-                "user_released_from_sandbox",
-                user_id=user_id,
-                chat_id=chat_id,
-                reason=reason,
-                messages_sent=new_state.messages_sent,
-                approved_messages=new_state.approved_messages,
+            # Attempt to save with version check
+            saved = await self._save_sandbox_state_with_version_check(
+                new_state, original_version
             )
 
-        # Save updated state
-        await self._save_sandbox_state(new_state)
+            if saved:
+                # Success - handle release if needed
+                if should_release and reason:
+                    if state.status != SandboxStatus.SOFT_WATCH and self._restrictions:
+                        try:
+                            await self._restrictions.remove_sandbox_restrictions(
+                                user_id, chat_id
+                            )
+                        except TelegramOperationError:
+                            pass  # Log handled in adapter
 
+                    self._logger.info(
+                        "user_released_from_sandbox",
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        reason=reason,
+                        messages_sent=new_state.messages_sent,
+                        approved_messages=new_state.approved_messages,
+                    )
+
+                return new_state
+
+            # Version conflict - retry
+            self._logger.debug(
+                "sandbox_state_version_conflict_retry",
+                user_id=user_id,
+                chat_id=chat_id,
+                attempt=attempt + 1,
+                original_version=original_version,
+            )
+
+        # Max retries exceeded - log warning and save anyway (last resort)
+        self._logger.warning(
+            "sandbox_state_max_retries_exceeded",
+            user_id=user_id,
+            chat_id=chat_id,
+            max_retries=max_retries,
+        )
+        await self._save_sandbox_state(new_state)
         return new_state
+
+    async def _save_sandbox_state_with_version_check(
+        self,
+        state: SandboxState,
+        expected_version: int,
+    ) -> bool:
+        """
+        Save sandbox state only if version matches (optimistic lock).
+
+        Args:
+            state: SandboxState to save.
+            expected_version: Expected version in Redis.
+
+        Returns:
+            True if saved successfully, False if version conflict.
+        """
+        key = self._sandbox_key(state.chat_id, state.user_id)
+
+        # Get current state to check version
+        current_data = await self._cache.get_json(key)
+
+        if current_data is not None:
+            current_version = current_data.get("version", 0)
+            if current_version != expected_version:
+                # Version mismatch - another process updated
+                return False
+
+        # Version matches or no state exists - save
+        return await self._cache.set_json(key, state.to_dict(), ttl=TTL_SANDBOX_STATE)
 
     async def _check_release_conditions(self, state: SandboxState) -> tuple[bool, str | None]:
         """

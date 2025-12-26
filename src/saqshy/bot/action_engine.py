@@ -912,6 +912,11 @@ class ActionEngine:
             if len(text_preview) > MAX_MESSAGE_PREVIEW:
                 text_preview = text_preview[:MAX_MESSAGE_PREVIEW] + "..."
 
+            # Generate message hash for feedback tracking
+            message_hash = hashlib.md5(
+                f"{chat_id}:{message.message_id}:{text_preview[:50]}".encode()
+            ).hexdigest()[:12]
+
             # Format contributing factors
             factors_text = ""
             for factor in risk_result.contributing_factors[:5]:
@@ -927,23 +932,27 @@ class ActionEngine:
                 f"Contributing factors:\n{factors_text}"
             )
 
-            # Build inline keyboard with action buttons
+            # Build inline keyboard with feedback buttons for spam detection improvement
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text="Confirm Ban",
-                            callback_data=f"mod:confirm:{user_id}:{chat_id}",
+                            text="✅ Confirm Spam",
+                            callback_data=f"feedback:confirm:{message_hash}:{chat_id}",
                         ),
                         InlineKeyboardButton(
-                            text="Restore",
-                            callback_data=f"mod:restore:{user_id}:{chat_id}:{message.message_id}",
+                            text="❌ False Positive",
+                            callback_data=f"feedback:fp:{message_hash}:{chat_id}:{user_id}",
                         ),
                     ],
                     [
                         InlineKeyboardButton(
-                            text="View Full",
-                            callback_data=f"mod:view:{message.message_id}:{chat_id}",
+                            text="🔨 Ban User",
+                            callback_data=f"review:ban:{user_id}:{chat_id}",
+                        ),
+                        InlineKeyboardButton(
+                            text="🔓 Restore",
+                            callback_data=f"confirm:unban:{user_id}:{chat_id}",
                         ),
                     ],
                 ]

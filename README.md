@@ -8,10 +8,12 @@ AI-powered Telegram anti-spam bot using Cumulative Risk Score architecture.
 
 - **Cumulative Risk Scoring**: Multiple signals combined for accurate spam detection
 - **Group-Type Awareness**: Optimized thresholds for general, tech, deals, and crypto groups
-- **Channel Subscription Trust**: Strongest trust signal for verified community members
-- **Sandbox Mode**: Protected onboarding for new users
-- **LLM Gray Zone**: AI-powered decisions for ambiguous cases (60-80 score range)
+- **Channel Subscription Trust**: Conditional trust signal with duration bonuses and new account caps
+- **Sandbox Mode**: Protected onboarding for new users with race-condition-safe state management
+- **LLM Gray Zone**: AI-powered decisions for wide score range (35-85) with first-message pre-filtering
+- **Cross-Group Detection**: Tiered duplicate detection across groups (+20/+35/+50 points)
 - **Real-time Spam Database**: Vector similarity matching against known spam patterns
+- **Admin Feedback Loop**: Confirm/False Positive buttons for continuous model improvement
 - **Mini App**: Admin dashboard for settings and analytics
 
 ## Quick Start
@@ -94,7 +96,7 @@ saqshy/
 ```
 Webhook → Preprocessor → [Profile + Content + Behavior + SpamDB] (parallel)
        → RiskCalculator → Verdict → ActionEngine
-       → LLM (only for gray zone 60-80)
+       → LLM (gray zone 35-85, or first messages from unestablished users)
 ```
 
 ### Verdicts
@@ -119,15 +121,18 @@ Webhook → Preprocessor → [Profile + Content + Behavior + SpamDB] (parallel)
 ## Key Signals
 
 **Trust Signals (reduce risk):**
-- Channel subscriber: **-25 points**
+- Channel subscriber: **-15 to -25 points** (conditional on account age and duration)
+  - Base: -15, +7 days: -20, +30 days: -25
+  - New accounts (<7 days) capped at -10 max
+- Group membership: -5 (7d) / -10 (30d) / -15 (90d)
 - Previous approved messages: -5 to -15 points
 - Account age (3+ years): -15 points
 - Premium user: -10 points
 
 **Risk Signals (increase risk):**
-- Spam DB similarity 0.88+: +45 points
+- Spam DB similarity 0.95+: +50 points
 - Crypto scam phrases: +35 points
-- Duplicate across groups: +35 points
+- Duplicate across groups: +20 (2 groups) / +35 (3 groups) / +50 (5+ groups)
 - New account (<7 days): +15 points
 
 ## Commands
@@ -247,7 +252,7 @@ After deployment, verify all services are healthy:
 curl https://your-domain.com/health
 
 # Expected response:
-# {"status": "healthy", "version": "2.1.0", "services": {...}}
+# {"status": "healthy", "version": "2.2.0", "services": {...}}
 
 # Check webhook status
 curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"

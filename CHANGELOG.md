@@ -5,6 +5,52 @@ All notable changes to SAQSHY will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2024-12-27
+
+### Added
+
+#### Enhanced Spam Detection
+- **Expanded LLM Gray Zone**: Changed from (60-80) to (35-85) for wider AI-powered analysis coverage
+- **LLM Pre-Filter for First Messages**: Unestablished users (< 3 approved messages) with score >= 25 now automatically trigger LLM review
+- **Admin Feedback Buttons**: "Confirm Spam" / "False Positive" buttons in admin notifications for model training
+- **Group Membership Trust Signal**: New `group_membership_days` field in BehaviorSignals
+  - 7+ days: -5 points
+  - 30+ days: -10 points
+  - 90+ days: -15 points
+
+#### Cross-Group Detection
+- **Tiered Duplicate Detection**: Improved duplicate message detection across groups with tiered scoring
+  - 2 groups: +20 points
+  - 3 groups: +35 points
+  - 5+ groups: +50 points
+
+### Changed
+
+#### Channel Subscriber Bonus (Breaking Change)
+- **Conditional Bonus System**: Replaced flat -25 bonus with conditional system to prevent bypass attacks
+  - Base bonus: -15 (reduced from -25)
+  - Duration 7+ days: additional -5 (total -20)
+  - Duration 30+ days: additional -10 (total -25)
+  - **New accounts cap**: Accounts < 7 days old are capped at -10 maximum bonus
+- This prevents compromised/purchased accounts from immediately bypassing spam detection
+
+#### LLM Fallback Behavior
+- **Conservative Fallback**: On LLM errors, now returns score-based verdict instead of ALLOW
+  - Score >= 55: LIMIT
+  - Score >= 40: WATCH
+  - Score < 40: ALLOW
+
+#### Sandbox System
+- **Race Condition Fix**: Added optimistic locking with version field to prevent concurrent update issues
+- `SandboxState` now includes `version: int` field
+- `record_message()` uses retry logic with version checking
+
+### Security
+- Admin feedback buttons use hashed message IDs for tamper resistance
+- Callback data validation prevents unauthorized feedback submissions
+
+---
+
 ## [2.1.0] - 2024-12-27
 
 ### Fixed

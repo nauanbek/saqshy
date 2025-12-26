@@ -69,9 +69,14 @@ src/saqshy/
 Webhook → bot/handlers/messages.py → bot/pipeline.py
        → [ProfileAnalyzer + ContentAnalyzer + BehaviorAnalyzer + SpamDB] (parallel)
        → core/risk_calculator.py → Verdict
-       → services/llm.py (only for gray zone 60-80)
+       → services/llm.py (for gray zone 35-85, or first messages from unestablished users)
        → bot/action_engine.py → Execute action
 ```
+
+### LLM Integration
+- **Gray Zone**: 35-85 (expanded from 60-80 for wider coverage)
+- **First Message Pre-Filter**: Users with <3 approved messages and score ≥25 always trigger LLM
+- **Fallback on Error**: Returns LIMIT (score≥55), WATCH (score≥40), or ALLOW (score<40) instead of blanket ALLOW
 
 ### Verdicts and Actions
 
@@ -108,16 +113,23 @@ Thresholds in `core/constants.py:THRESHOLDS`:
 ## Key Signals (from core/constants.py)
 
 Trust signals (negative = lower risk):
-- `is_channel_subscriber`: **-25** (strongest in `BEHAVIOR_WEIGHTS`)
+- `is_channel_subscriber`: **-15 to -25** (conditional, see below)
 - `previous_messages_approved_10_plus`: -15
 - `account_age_3_years`: -15
+- `group_membership_days` (7d: -5, 30d: -10, 90d: -15)
 - `is_in_global_whitelist`: -30
+
+**Channel Subscriber Bonus (v2.2.0+):**
+- Base: -15 (was -25, reduced to prevent bypass)
+- Duration 7+ days: additional -5 (total -20)
+- Duration 30+ days: additional -10 (total -25)
+- **New accounts (<7 days) capped at -10 max** to prevent compromised account abuse
 
 Risk signals (positive = higher risk):
 - `spam_db_similarity_0.95_plus`: +50 (in `NETWORK_WEIGHTS`)
 - `is_in_global_blocklist`: +50
 - `crypto_scam_phrase`: +35 (in `CONTENT_WEIGHTS`)
-- `duplicate_across_groups`: +35
+- `duplicate_in_2_groups`: +20, `duplicate_in_3_groups`: +35, `duplicate_in_5_plus_groups`: +50
 
 ## Bot Commands
 
@@ -148,6 +160,12 @@ Execution order:
 - `RiskResult`: Final calculation result with score, verdict, contributing/mitigating factors
 - `MessageContext`: All context needed to analyze a message
 - `Action`: What to do based on verdict (delete, restrict, ban, warn)
+
+### BehaviorSignals Key Fields (v2.2.0+)
+- `is_channel_subscriber`: bool - subscribed to linked channel
+- `channel_subscription_duration_days`: int - how long subscribed
+- `group_membership_days`: int - how long in this group (new in v2.2.0)
+- `previous_messages_approved`: int - trust history
 
 ## Testing
 

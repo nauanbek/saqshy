@@ -200,75 +200,43 @@ pytest -k "test_channel_subscriber"
 
 ## Production Deployment
 
-### Quick Start (VPS)
+### Coolify (Recommended)
 
-1. **Prepare the server:**
+SAQSHY is designed for Coolify v4 deployment with automatic SSL via Traefik.
 
-```bash
-# SSH into your VPS
-ssh user@your-server
+1. **Create new service in Coolify:**
+   - Type: Docker Compose
+   - Source: GitHub repository or upload `docker/docker-compose.prod.yml`
 
-# Create deployment directory
-sudo mkdir -p /opt/saqshy
-sudo chown $USER:$USER /opt/saqshy
-cd /opt/saqshy
+2. **Configure environment variables in Coolify dashboard:**
 
-# Clone the repository
-git clone https://github.com/nauanbek/saqshy.git .
-```
-
-2. **Configure environment:**
-
-```bash
-# Copy production template
-cp .env.prod.example .env.prod
-
-# Edit with your production values
-nano .env.prod
-```
-
-3. **Setup SSL and deploy:**
-
-```bash
-# Install certbot and get certificate
-sudo apt install certbot
-sudo certbot certonly --standalone -d your-domain.com
-
-# Copy certificates
-sudo cp /etc/letsencrypt/live/your-domain.com/fullchain.pem docker/nginx/ssl/cert.pem
-sudo cp /etc/letsencrypt/live/your-domain.com/privkey.pem docker/nginx/ssl/key.pem
-
-# Build and start
-docker compose -f docker/docker-compose.prod.yml up -d
-
-# Run migrations
-docker compose -f docker/docker-compose.prod.yml exec bot alembic upgrade head
-```
-
-4. **Set webhook:**
-
-```bash
-curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://your-domain.com/webhook", "secret_token": "<WEBHOOK_SECRET>"}'
-```
-
-### GitHub Actions Secrets
-
-For automated CI/CD deployment, configure these secrets in your repository:
-
-| Secret | Description | How to Get |
-|--------|-------------|------------|
-| `TELEGRAM_BOT_TOKEN` | Production bot token | [@BotFather](https://t.me/BotFather) |
+| Variable | Description | How to Get |
+|----------|-------------|------------|
+| `TELEGRAM_BOT_TOKEN` | Bot API token | [@BotFather](https://t.me/BotFather) |
+| `WEBHOOK_BASE_URL` | Your domain (e.g., `https://saqshy.example.com`) | Coolify domain settings |
+| `WEBHOOK_SECRET` | Webhook verification secret | `openssl rand -hex 32` |
 | `ANTHROPIC_API_KEY` | Claude API key | [Anthropic Console](https://console.anthropic.com/) |
 | `COHERE_API_KEY` | Embeddings API key | [Cohere Dashboard](https://dashboard.cohere.com/) |
 | `POSTGRES_PASSWORD` | Database password | `openssl rand -hex 16` |
-| `WEBHOOK_SECRET` | Webhook verification | `openssl rand -hex 32` |
 | `JWT_SECRET` | Mini App JWT secret | `openssl rand -hex 32` |
-| `SSH_HOST` | Server IP address | Your VPS provider |
-| `SSH_USER` | SSH username | Usually `root` or `deploy` |
-| `SSH_PRIVATE_KEY` | SSH private key | `cat ~/.ssh/id_ed25519` |
-| `GHCR_TOKEN` | GitHub packages token | [GitHub Settings](https://github.com/settings/tokens) |
+
+3. **Deploy and run migrations:**
+
+```bash
+# After deployment succeeds, run migrations
+docker exec saqshy-bot alembic upgrade head
+
+# Seed spam database (optional)
+docker exec saqshy-bot python scripts/seed_spam_db.py
+```
+
+4. **Configure domain in Coolify:**
+   - Set domain to your WEBHOOK_BASE_URL
+   - SSL is handled automatically by Traefik/Let's Encrypt
+
+### Manual VPS Deployment
+
+For non-Coolify deployments, see [`docker/RELEASE.md`](docker/RELEASE.md).
 
 ### Health Check Verification
 
@@ -279,36 +247,31 @@ After deployment, verify all services are healthy:
 curl https://your-domain.com/health
 
 # Expected response:
-# {"status": "healthy", "version": "1.0.0", "services": {...}}
+# {"status": "healthy", "version": "2.1.0", "services": {...}}
 
 # Check webhook status
 curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
-
-# Check service status
-docker compose -f docker/docker-compose.prod.yml ps
 ```
 
 ### Troubleshooting
 
 **Bot not responding to messages:**
 1. Verify webhook is set: `curl https://api.telegram.org/bot<TOKEN>/getWebhookInfo`
-2. Check bot logs: `docker compose -f docker/docker-compose.prod.yml logs bot`
-3. Verify SSL certificate is valid and not expired
+2. Check bot logs in Coolify dashboard or `docker logs saqshy-bot`
+3. Verify `WEBHOOK_BASE_URL` matches your domain
+
+**"Port already allocated" error:**
+- Use `expose:` instead of `ports:` in docker-compose (Traefik handles routing)
 
 **Database connection errors:**
-1. Check PostgreSQL is running: `docker compose ps postgres`
-2. Verify `DATABASE_URL` in `.env.prod` matches `POSTGRES_*` variables
-3. Check PostgreSQL logs: `docker compose logs postgres`
+1. Check PostgreSQL is running in Coolify
+2. Verify `DATABASE_URL` matches `POSTGRES_*` variables
+3. Check PostgreSQL logs
 
 **Mini App not loading:**
-1. Verify frontend was built: `ls mini_app_frontend/dist/`
-2. Check Nginx logs: `docker compose logs nginx`
-3. Ensure `MINI_APP_URL` matches your domain
-
-**High memory usage:**
-1. Check resource usage: `docker stats`
-2. Consider increasing server RAM (2GB+ recommended)
-3. Restart services: `docker compose restart`
+1. Verify `WEBHOOK_BASE_URL` is set correctly with HTTPS
+2. Check that `/app/` route is accessible
+3. Ensure frontend assets are built in container
 
 For detailed deployment procedures, see [`docker/RELEASE.md`](docker/RELEASE.md).
 

@@ -5,6 +5,42 @@ All notable changes to SAQSHY will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2024-12-27
+
+### Fixed
+
+#### Coolify Deployment Compatibility
+- Changed `ports:` to `expose:` in `docker-compose.prod.yml` for Coolify/Traefik compatibility
+- Removed nginx service (Traefik handles reverse proxy and SSL)
+- Removed Qdrant healthcheck (image has no wget/curl)
+- Updated `docker/RELEASE.md` for Coolify-specific workflow
+
+#### Bot Initialization
+- Fixed "Router is already attached" error by using pre-composed main router
+- Routers now attached only to main router in `handlers/__init__.py`, not duplicated in dispatcher
+
+#### Mini App URL Injection
+- Created `ConfigMiddleware` to inject mini_app_url into handler data
+- Fixed "BUTTON_TYPE_INVALID" error with HTTPS URL validation
+- Mini App URL now configurable from `WEBHOOK_BASE_URL` environment variable
+
+#### Spam Detection
+- Added standalone spam phrases: "airdrop", "join channel", "join t.me"
+- Added urgency phrases: "limited time", "hurry up", "act now", "don't miss"
+- Added Russian variants: "вступай в канал", "бесплатный аирдроп"
+- Messages like "get airdrop now! join t.me/channel" now correctly detected as spam
+
+#### Action Engine
+- Added "delete" action to LIMIT verdict (was only restricting, not deleting)
+- LIMIT verdict now: delete message → restrict user → log → notify admins
+
+### Changed
+- Middleware execution order now includes `ConfigMiddleware` after `ErrorMiddleware`
+- Technology stack updated: Coolify/Traefik replaces standalone Nginx
+- Deployment documentation updated for Coolify v4 workflow
+
+---
+
 ## [1.0.0] - 2024-12-26
 
 Initial production release of SAQSHY - AI-powered Telegram anti-spam bot.

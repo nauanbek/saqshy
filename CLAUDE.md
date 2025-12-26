@@ -14,7 +14,7 @@ SAQSHY is an AI-powered Telegram anti-spam bot using Cumulative Risk Score archi
 - PostgreSQL 16 (SQLAlchemy 2.0 + asyncpg), Redis 7.x, Qdrant 1.x
 - Claude API (claude-sonnet-4-20250514), Cohere embed-multilingual-v3.0
 - React 18, Vite, TypeScript (Mini App)
-- Docker 24.x, Nginx
+- Docker 24.x, Coolify/Traefik (production)
 
 ## Commands
 
@@ -73,7 +73,15 @@ Webhook → bot/handlers/messages.py → bot/pipeline.py
        → bot/action_engine.py → Execute action
 ```
 
-Verdicts: ALLOW (0-30) → WATCH (30-50) → LIMIT (50-75) → REVIEW (75-92) → BLOCK (92+)
+### Verdicts and Actions
+
+| Verdict | Score | Actions |
+|---------|-------|---------|
+| ALLOW | 0-30 | — |
+| WATCH | 30-50 | log |
+| LIMIT | 50-75 | **delete**, restrict, log, notify_admins |
+| REVIEW | 75-92 | hold, log, queue_review, notify_admins |
+| BLOCK | 92+ | delete, ban, log, notify_admins |
 
 ## Group Types (Critical)
 
@@ -88,6 +96,15 @@ Thresholds in `core/constants.py:THRESHOLDS`:
 
 **Deals groups:** `WHITELIST_DOMAINS_DEALS`, `ALLOWED_SHORTENERS` (clck.ru, fas.st, bit.ly), FP target <5%.
 
+## Crypto Scam Detection (core/constants.py)
+
+`CRYPTO_SCAM_PHRASES` triggers +35 score. Key patterns:
+- Airdrop: `"airdrop"`, `"free tokens"`, `"claim reward"`, `"free crypto"`
+- Channel spam: `"join channel"`, `"join t.me"`, `"join now"`
+- Urgency: `"limited time"`, `"hurry up"`, `"act now"`, `"don't miss"`
+- Investment: `"guaranteed profit"`, `"double your"`, `"passive income"`
+- Russian: `"бесплатный аирдроп"`, `"вступай в канал"`
+
 ## Key Signals (from core/constants.py)
 
 Trust signals (negative = lower risk):
@@ -101,6 +118,26 @@ Risk signals (positive = higher risk):
 - `is_in_global_blocklist`: +50
 - `crypto_scam_phrase`: +35 (in `CONTENT_WEIGHTS`)
 - `duplicate_across_groups`: +35
+
+## Bot Commands
+
+Admin commands (in groups):
+- `/settings` — Open Mini App settings (requires admin)
+- `/status` — Show protection status
+- `/stats` — View spam statistics
+- `/settype [general|tech|deals|crypto]` — Set group type
+- `/whitelist @user` — Add to trusted list
+- `/blacklist @user` — Add to blocklist
+- `/check @user` — Check user trust score
+
+## Middlewares (bot/middlewares/)
+
+Execution order:
+1. `ErrorMiddleware` (outer) — Catches all errors
+2. `ConfigMiddleware` — Injects config values (mini_app_url)
+3. `LoggingMiddleware` — Correlation IDs, request logging
+4. `AuthMiddleware` — Permission checks, admin detection
+5. `RateLimitMiddleware` — Abuse prevention
 
 ## Core Types (from core/types.py)
 
@@ -143,9 +180,22 @@ pytest --cov=src/saqshy --cov-report=html  # Coverage report
 
 **Phase order:** Infrastructure → Core Domain → External Services → Telegram Bot → Mini App → Quality/Security → Production Deploy
 
+## Deployment (Coolify)
+
+Production uses Coolify v4 with Traefik reverse proxy:
+- Use `docker/docker-compose.prod.yml`
+- Use `expose:` not `ports:` (Traefik handles routing)
+- Environment variables injected via Coolify dashboard
+- SSL/TLS handled automatically by Let's Encrypt
+
+Key environment variables:
+- `TELEGRAM_BOT_TOKEN`, `WEBHOOK_BASE_URL`, `WEBHOOK_SECRET`
+- `ANTHROPIC_API_KEY`, `COHERE_API_KEY`
+- `POSTGRES_PASSWORD`, `JWT_SECRET`
+
 ## Documentation
 
-- `docker/RELEASE.md` - Production deployment procedures
+- `docker/RELEASE.md` - Coolify deployment procedures
 - `SECURITY.md` - Security audit and guidelines
 - `CHANGELOG.md` - Version history
 - `CONTRIBUTING.md` - Contribution guidelines

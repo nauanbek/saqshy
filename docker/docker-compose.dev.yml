@@ -1,10 +1,12 @@
 # Development services ONLY - bot runs locally on host machine
 # Usage: docker-compose -f docker/docker-compose.dev.yml up -d
+#
+# For local development with bot running on host via: uv run python -m saqshy
 
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: saqshy-postgres
+    container_name: saqshy-postgres-dev
     environment:
       POSTGRES_USER: saqshy
       POSTGRES_PASSWORD: password
@@ -14,14 +16,15 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U saqshy"]
+      test: ["CMD-SHELL", "pg_isready -U saqshy -d saqshy"]
       interval: 5s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
   redis:
     image: redis:7-alpine
-    container_name: saqshy-redis
+    container_name: saqshy-redis-dev
     ports:
       - "6379:6379"
     volumes:
@@ -35,7 +38,7 @@ services:
 
   qdrant:
     image: qdrant/qdrant:latest
-    container_name: saqshy-qdrant
+    container_name: saqshy-qdrant-dev
     ports:
       - "6333:6333"
       - "6334:6334"
@@ -48,6 +51,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
 volumes:
   postgres_data:

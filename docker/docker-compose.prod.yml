@@ -2,21 +2,23 @@
 # Usage: docker-compose -f docker/docker-compose.prod.yml --project-directory . up -d
 #
 # Note: All paths are relative to project root (for Coolify compatibility)
+# Note: No container_name directives - Coolify manages container naming
+# Note: For Coolify - environment variables are injected via Coolify dashboard
+#       For local deployment - create .env.prod in project root
 #
 # Prerequisites:
-#   1. Copy .env.example to .env.prod and fill in production values
-#   2. Place SSL certificates in docker/nginx/ssl/
+#   1. Copy .env.prod.example to .env.prod and fill in production values
+#   2. Place SSL certificates in docker/nginx/ssl/ (or use Coolify SSL termination)
 #   3. Build Mini App: cd mini_app_frontend && npm run build
-#   4. Run migrations: docker-compose -f docker/docker-compose.prod.yml exec bot alembic upgrade head
+#   4. Run migrations: docker-compose exec bot alembic upgrade head
 
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: saqshy-postgres-prod
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_USER: ${POSTGRES_USER:-saqshy}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_DB: ${POSTGRES_DB:-saqshy}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     deploy:
@@ -24,17 +26,17 @@ services:
         limits:
           memory: 1G
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-saqshy} -d $${POSTGRES_DB:-saqshy}"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
     restart: always
     networks:
       - backend
 
   redis:
     image: redis:7-alpine
-    container_name: saqshy-redis-prod
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
@@ -47,13 +49,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
     restart: always
     networks:
       - backend
 
   qdrant:
     image: qdrant/qdrant:latest
-    container_name: saqshy-qdrant-prod
     volumes:
       - qdrant_data:/qdrant/storage
     environment:
@@ -66,7 +68,8 @@ services:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:6333/readyz"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 30s
     restart: always
     networks:
       - backend
@@ -76,12 +79,12 @@ services:
       context: .
       dockerfile: docker/Dockerfile
       target: production
-    container_name: saqshy-bot-prod
-    env_file:
-      - .env.prod
+    # Environment variables are injected by Coolify dashboard
+    # For local deployment, set variables via env_file or shell:
+    #   env_file: [../.env.prod]
     environment:
       # Override connection strings for container network
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-saqshy}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-saqshy}
       REDIS_URL: redis://redis:6379/0
       QDRANT_URL: http://qdrant:6333
     depends_on:
@@ -100,7 +103,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 60s
     restart: always
     networks:
       - backend
@@ -108,7 +111,6 @@ services:
 
   nginx:
     image: nginx:1.25-alpine
-    container_name: saqshy-nginx-prod
     ports:
       - "80:80"
       - "443:443"
@@ -124,6 +126,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 10s
     restart: always
     networks:
       - frontend
@@ -135,6 +138,4 @@ volumes:
 
 networks:
   backend:
-    name: saqshy-backend
   frontend:
-    name: saqshy-frontend

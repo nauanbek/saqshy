@@ -94,7 +94,7 @@ async def handle_member_join(
         should_sandbox = await _should_enter_sandbox(
             user_id=user.id,
             chat_id=chat.id,
-            is_premium=user.is_premium,
+            is_premium=user.is_premium or False,
             cache_service=cache_service,
         )
 

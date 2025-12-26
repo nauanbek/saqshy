@@ -9,10 +9,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import Select, and_, func, select
+from sqlalchemy import CursorResult, Select, and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -535,10 +535,10 @@ class DecisionRepository(BaseRepository[Decision]):
             Number of deleted records
         """
         cutoff = datetime.now(UTC) - timedelta(days=days)
-        stmt = Decision.__table__.delete().where(Decision.created_at < cutoff)
-        result = await self.session.execute(stmt)
+        stmt = delete(Decision).where(Decision.created_at < cutoff)
+        result = cast(CursorResult[Any], await self.session.execute(stmt))
         await self.session.flush()
-        return result.rowcount
+        return result.rowcount or 0
 
     # =========================================================================
     # Explicit relationship loading methods

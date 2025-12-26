@@ -1,5 +1,10 @@
+# syntax=docker/dockerfile:1
 # SAQSHY Anti-Spam Bot - Multi-stage Dockerfile
-# Build: docker build -t saqshy-bot --target production -f docker/Dockerfile .
+# Build: DOCKER_BUILDKIT=1 docker build -t saqshy-bot --target production -f docker/Dockerfile .
+#
+# BuildKit secrets usage (secrets won't be in final image):
+#   docker build --secret id=pip_token,src=.pip_token -t saqshy-bot .
+#   Then in RUN: --mount=type=secret,id=pip_token cat /run/secrets/pip_token
 
 # ============================================
 # Build stage - Install dependencies
@@ -19,7 +24,10 @@ COPY pyproject.toml ./
 COPY README.md ./
 
 # Create wheels for all dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
+# Use BuildKit secret for private pip index (optional):
+#   --mount=type=secret,id=pip_token PIP_INDEX_URL=$(cat /run/secrets/pip_token)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir build wheel && \
     pip wheel --no-cache-dir --wheel-dir /wheels .
 

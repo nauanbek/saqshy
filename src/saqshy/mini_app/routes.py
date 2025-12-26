@@ -255,6 +255,74 @@ def create_mini_app_routes() -> web.RouteTableDef:
         status = 200 if result.get("success") else _get_error_status(result)
         return web.json_response(result, status=status)
 
+    # Plural alias for review queue (frontend compatibility)
+    @routes.get("/api/groups/{group_id}/reviews")
+    async def api_get_review_queue_plural(request: web.Request) -> web.Response:
+        """Alias for /review endpoint (plural form for REST convention)."""
+        return await api_get_review_queue(request)
+
+    @routes.post("/api/groups/{group_id}/reviews")
+    async def api_submit_review_action(request: web.Request) -> web.Response:
+        """
+        Submit a review action (approve/confirm_block).
+
+        POST /api/groups/{group_id}/reviews
+
+        Body:
+        {
+            "review_id": "string",
+            "action": "approve" | "confirm_block"
+        }
+
+        Requires:
+        - WebApp authentication
+        - Admin status in the group
+        """
+        try:
+            group_id = int(request.match_info["group_id"])
+        except ValueError:
+            return _error_response("VALIDATION_ERROR", "Invalid group_id")
+
+        try:
+            body = await request.json()
+        except json.JSONDecodeError as e:
+            logger.warning("invalid_json_body", error=str(e), endpoint="submit_review_action")
+            return _error_response("VALIDATION_ERROR", "Invalid JSON body", status=400)
+        except Exception as e:
+            logger.error("json_parse_unexpected", error_type=type(e).__name__, error=str(e))
+            return _error_response("ERROR", "Internal server error", status=500)
+
+        review_id = body.get("review_id")
+        if not review_id:
+            return _error_response("VALIDATION_ERROR", "review_id is required")
+
+        action = body.get("action")
+        if action not in ("approve", "confirm_block"):
+            return _error_response("VALIDATION_ERROR", "action must be 'approve' or 'confirm_block'")
+
+        # Delegate to override_decision handler with mapped body
+        session = _get_session(request)
+        try:
+            result = await override_decision(
+                request, session, group_id, review_id, {"action": action}
+            )
+            if result.get("success"):
+                await session.commit()
+            status = 200 if result.get("success") else _get_error_status(result)
+            return web.json_response(result, status=status)
+        except ValidationError as e:
+            await session.rollback()
+            return _error_response("VALIDATION_ERROR", str(e), status=422)
+        except Exception as e:
+            await session.rollback()
+            logger.error(
+                "submit_review_action_failed",
+                group_id=group_id,
+                review_id=review_id,
+                error=str(e),
+            )
+            return _error_response("ERROR", "Review action failed", status=500)
+
     # =========================================================================
     # Decision Endpoints
     # =========================================================================

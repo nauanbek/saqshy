@@ -1,7 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { FixedSizeList as List, ListChildComponentProps } from 'react-window';
 import type { PendingReview } from '../types';
 import { LoadingSpinner } from './LoadingSpinner';
 import { useTelegram } from '../hooks/useTelegram';
+
+// Estimated height of each review card (includes padding/margins)
+const REVIEW_ITEM_HEIGHT = 180;
+
+// Minimum height for the virtual list
+const MIN_LIST_HEIGHT = 400;
 
 interface ReviewQueueProps {
   reviews: PendingReview[];
@@ -145,12 +152,72 @@ function ReviewItem({
   );
 }
 
+// Data passed to each virtualized row
+interface RowData {
+  reviews: PendingReview[];
+  onApprove: (reviewId: string) => Promise<void>;
+  onConfirmBlock: (reviewId: string) => Promise<void>;
+}
+
+// Virtualized row component for react-window
+function ReviewRow({
+  index,
+  style,
+  data,
+}: ListChildComponentProps<RowData>): React.ReactElement {
+  const review = data.reviews[index];
+
+  return (
+    <div style={style}>
+      <ReviewItem
+        review={review}
+        onApprove={() => data.onApprove(review.id)}
+        onConfirmBlock={() => data.onConfirmBlock(review.id)}
+      />
+    </div>
+  );
+}
+
 export function ReviewQueue({
   reviews,
   onApprove,
   onConfirmBlock,
   isLoading,
 }: ReviewQueueProps): React.ReactElement {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [listHeight, setListHeight] = useState(MIN_LIST_HEIGHT);
+
+  // Calculate available height for the list
+  useEffect(() => {
+    const calculateHeight = () => {
+      if (containerRef.current) {
+        // Get viewport height minus header and padding
+        const viewportHeight = window.innerHeight;
+        const headerOffset = containerRef.current.getBoundingClientRect().top;
+        const padding = 40; // Bottom padding
+        const calculatedHeight = viewportHeight - headerOffset - padding;
+
+        setListHeight(Math.max(MIN_LIST_HEIGHT, calculatedHeight));
+      }
+    };
+
+    calculateHeight();
+    window.addEventListener('resize', calculateHeight);
+
+    return () => window.removeEventListener('resize', calculateHeight);
+  }, []);
+
+  // Memoize handlers to prevent unnecessary re-renders
+  const handleApprove = useCallback(
+    (reviewId: string) => onApprove(reviewId),
+    [onApprove]
+  );
+
+  const handleConfirmBlock = useCallback(
+    (reviewId: string) => onConfirmBlock(reviewId),
+    [onConfirmBlock]
+  );
+
   if (isLoading) {
     return (
       <div className="review-queue-loading">
@@ -169,23 +236,31 @@ export function ReviewQueue({
     );
   }
 
+  // Data object passed to each row - avoids re-creating on each render
+  const itemData: RowData = {
+    reviews,
+    onApprove: handleApprove,
+    onConfirmBlock: handleConfirmBlock,
+  };
+
   return (
-    <div className="review-queue">
+    <div className="review-queue" ref={containerRef}>
       <div className="review-queue-header">
         <h3>Pending Reviews</h3>
         <span className="review-count">{reviews.length} items</span>
       </div>
 
-      <div className="review-list">
-        {reviews.map((review) => (
-          <ReviewItem
-            key={review.id}
-            review={review}
-            onApprove={() => onApprove(review.id)}
-            onConfirmBlock={() => onConfirmBlock(review.id)}
-          />
-        ))}
-      </div>
+      <List
+        height={listHeight}
+        itemCount={reviews.length}
+        itemSize={REVIEW_ITEM_HEIGHT}
+        width="100%"
+        itemData={itemData}
+        overscanCount={3}
+        className="review-list-virtual"
+      >
+        {ReviewRow}
+      </List>
     </div>
   );
 }

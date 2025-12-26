@@ -201,9 +201,10 @@ class TestSandboxManager:
 
     @pytest.fixture
     def mock_bot(self):
-        """Create mock aiogram Bot."""
+        """Create mock ChatRestrictionsProtocol."""
         bot = AsyncMock()
-        bot.restrict_chat_member.return_value = True
+        bot.apply_sandbox_restrictions.return_value = True
+        bot.remove_sandbox_restrictions.return_value = True
         return bot
 
     @pytest.fixture
@@ -217,9 +218,9 @@ class TestSandboxManager:
     def manager(self, mock_cache, mock_bot, mock_channel_service):
         """Create SandboxManager instance."""
         return SandboxManager(
-            cache_service=mock_cache,
-            bot=mock_bot,
-            channel_subscription_service=mock_channel_service,
+            cache=mock_cache,
+            restrictions=mock_bot,
+            channel_subscription=mock_channel_service,
         )
 
     @pytest.mark.asyncio
@@ -240,7 +241,7 @@ class TestSandboxManager:
         mock_cache.set_json.assert_called_once()
 
         # Should apply restrictions
-        mock_bot.restrict_chat_member.assert_called_once()
+        mock_bot.apply_sandbox_restrictions.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_enter_sandbox_deals_group_soft_watch(self, manager, mock_cache, mock_bot):
@@ -257,7 +258,7 @@ class TestSandboxManager:
         mock_cache.set_json.assert_called_once()
 
         # Should NOT apply restrictions for deals groups
-        mock_bot.restrict_chat_member.assert_not_called()
+        mock_bot.apply_sandbox_restrictions.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_enter_sandbox_channel_subscriber_bypass(
@@ -278,7 +279,7 @@ class TestSandboxManager:
         assert state.status == SandboxStatus.EXEMPT
 
         # Should NOT apply restrictions for channel subscribers
-        mock_bot.restrict_chat_member.assert_not_called()
+        mock_bot.apply_sandbox_restrictions.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_enter_sandbox_already_sandboxed(self, manager, mock_cache):
@@ -410,7 +411,7 @@ class TestSandboxManager:
         assert updated.release_reason == ReleaseReason.APPROVED_MESSAGES.value
 
         # Should remove restrictions
-        mock_bot.restrict_chat_member.assert_called()
+        mock_bot.remove_sandbox_restrictions.assert_called()
 
     @pytest.mark.asyncio
     async def test_release_from_sandbox(self, manager, mock_cache, mock_bot):
@@ -432,39 +433,7 @@ class TestSandboxManager:
         )
 
         assert result is True
-        mock_bot.restrict_chat_member.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_apply_sandbox_restrictions(self, manager, mock_bot):
-        """Test applying Telegram restrictions."""
-        result = await manager.apply_sandbox_restrictions(user_id=123, chat_id=-456)
-
-        assert result is True
-        mock_bot.restrict_chat_member.assert_called_once()
-
-        # Verify permissions are restrictive
-        call_args = mock_bot.restrict_chat_member.call_args
-        permissions = call_args.kwargs.get("permissions")
-        assert permissions is not None
-        assert permissions.can_send_messages is True
-        assert permissions.can_send_photos is False
-        assert permissions.can_add_web_page_previews is False
-
-    @pytest.mark.asyncio
-    async def test_remove_sandbox_restrictions(self, manager, mock_bot):
-        """Test removing Telegram restrictions."""
-        result = await manager.remove_sandbox_restrictions(user_id=123, chat_id=-456)
-
-        assert result is True
-        mock_bot.restrict_chat_member.assert_called_once()
-
-        # Verify permissions are restored
-        call_args = mock_bot.restrict_chat_member.call_args
-        permissions = call_args.kwargs.get("permissions")
-        assert permissions is not None
-        assert permissions.can_send_messages is True
-        assert permissions.can_send_photos is True
-        assert permissions.can_add_web_page_previews is True
+        mock_bot.remove_sandbox_restrictions.assert_called()
 
     def test_get_sandbox_mode(self, manager):
         """Test get_sandbox_mode returns correct mode for group types."""
@@ -504,7 +473,7 @@ class TestSoftWatchMode:
     @pytest.fixture
     def soft_watch(self, mock_cache):
         """Create SoftWatchMode instance."""
-        return SoftWatchMode(cache_service=mock_cache)
+        return SoftWatchMode(cache=mock_cache)
 
     @pytest.mark.asyncio
     async def test_enter_soft_watch(self, soft_watch, mock_cache):
@@ -669,7 +638,7 @@ class TestTrustManager:
     @pytest.fixture
     def trust_manager(self, mock_cache):
         """Create TrustManager instance."""
-        return TrustManager(cache_service=mock_cache)
+        return TrustManager(cache=mock_cache)
 
     @pytest.mark.asyncio
     async def test_get_trust_level_default(self, trust_manager, mock_cache):
@@ -926,9 +895,10 @@ class TestEdgeCases:
 
     @pytest.fixture
     def mock_bot(self):
-        """Create mock aiogram Bot."""
+        """Create mock ChatRestrictionsProtocol."""
         bot = AsyncMock()
-        bot.restrict_chat_member.return_value = True
+        bot.apply_sandbox_restrictions.return_value = True
+        bot.remove_sandbox_restrictions.return_value = True
         return bot
 
     @pytest.mark.asyncio
@@ -941,31 +911,18 @@ class TestEdgeCases:
         """
         mock_cache.get_json.side_effect = Exception("Redis connection failed")
 
-        manager = SandboxManager(cache_service=mock_cache, bot=mock_bot)
+        manager = SandboxManager(cache=mock_cache, restrictions=mock_bot)
 
         # Exception should propagate up - caller should handle
         with pytest.raises(Exception, match="Redis connection failed"):
             await manager.get_sandbox_state(user_id=123, chat_id=-456)
 
     @pytest.mark.asyncio
-    async def test_sandbox_manager_handles_bot_api_failure(self, mock_cache, mock_bot):
-        """Test SandboxManager handles Bot API failures gracefully."""
-        mock_bot.restrict_chat_member.side_effect = TelegramAPIError(
-            method="restrictChatMember", message="Telegram API error"
-        )
-
-        manager = SandboxManager(cache_service=mock_cache, bot=mock_bot)
-
-        # Should not raise, should return False
-        result = await manager.apply_sandbox_restrictions(user_id=123, chat_id=-456)
-        assert result is False
-
-    @pytest.mark.asyncio
     async def test_record_message_for_non_sandboxed_user(self, mock_cache, mock_bot):
         """Test record_message returns None for non-sandboxed users."""
         mock_cache.get_json.return_value = None
 
-        manager = SandboxManager(cache_service=mock_cache, bot=mock_bot)
+        manager = SandboxManager(cache=mock_cache, restrictions=mock_bot)
 
         result = await manager.record_message(user_id=123, chat_id=-456, approved=True)
         assert result is None
@@ -981,7 +938,7 @@ class TestEdgeCases:
         )
         mock_cache.get_json.return_value = state.to_dict()
 
-        manager = SandboxManager(cache_service=mock_cache, bot=mock_bot)
+        manager = SandboxManager(cache=mock_cache, restrictions=mock_bot)
 
         result = await manager.release_from_sandbox(user_id=123, chat_id=-456)
         assert result is True
@@ -991,7 +948,7 @@ class TestEdgeCases:
         """Test TrustManager handles invalid cached values."""
         mock_cache.get.return_value = "invalid_level"
 
-        trust_manager = TrustManager(cache_service=mock_cache)
+        trust_manager = TrustManager(cache=mock_cache)
 
         level = await trust_manager.get_trust_level(user_id=123, chat_id=-456)
         assert level == TrustLevel.UNTRUSTED

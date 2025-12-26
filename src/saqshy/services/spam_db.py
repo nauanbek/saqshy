@@ -350,10 +350,11 @@ class SpamDB:
                 input_type="search_query",
             )
 
-            if not response.embeddings or len(response.embeddings[0]) != self.VECTOR_SIZE:
+            embeddings = list(response.embeddings) if response.embeddings else []
+            if not embeddings or len(embeddings[0]) != self.VECTOR_SIZE:
                 raise ValueError(
                     f"Unexpected embedding dimension: "
-                    f"{len(response.embeddings[0]) if response.embeddings else 0}"
+                    f"{len(embeddings[0]) if embeddings else 0}"
                 )
 
             logger.debug("cohere_verified", model=self.EMBEDDING_MODEL)
@@ -436,7 +437,8 @@ class SpamDB:
             input_type=input_type,
         )
 
-        embedding = list(response.embeddings[0])
+        embeddings_list = list(response.embeddings) if response.embeddings else []
+        embedding: list[float] = [float(x) for x in embeddings_list[0]] if embeddings_list else []
 
         # Cache the embedding
         self._embedding_cache[cache_key] = CacheEntry(embedding=embedding)
@@ -646,13 +648,14 @@ class SpamDB:
 
             # Search in Qdrant
             client = await self._get_qdrant_client()
-            results = await client.search(
+            response = await client.query_points(
                 collection_name=self.collection_name,
-                query_vector=embedding,
+                query=embedding,
                 limit=limit,
                 score_threshold=threshold,
                 with_payload=True,
             )
+            results = response.points
 
             # Convert to SpamMatch objects
             matches = []

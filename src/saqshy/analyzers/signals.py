@@ -113,27 +113,40 @@ class SignalAggregator:
             return Signals()
 
         # Handle any exceptions from tasks
+        profile_signals: ProfileSignals
+        content_signals: ContentSignals
+        behavior_signals: BehaviorSignals
+        network_signals: NetworkSignals
+
         if isinstance(profile, Exception):
             logger.error("profile_analysis_error", error=str(profile))
-            profile = ProfileSignals()
+            profile_signals = ProfileSignals()
+        else:
+            profile_signals = profile
 
         if isinstance(content, Exception):
             logger.error("content_analysis_error", error=str(content))
-            content = ContentSignals()
+            content_signals = ContentSignals()
+        else:
+            content_signals = content
 
         if isinstance(behavior, Exception):
             logger.error("behavior_analysis_error", error=str(behavior))
-            behavior = BehaviorSignals()
+            behavior_signals = BehaviorSignals()
+        else:
+            behavior_signals = behavior
 
         if isinstance(network, Exception):
             logger.error("network_analysis_error", error=str(network))
-            network = NetworkSignals()
+            network_signals = NetworkSignals()
+        else:
+            network_signals = network
 
         return Signals(
-            profile=profile,
-            content=content,
-            behavior=behavior,
-            network=network,
+            profile=profile_signals,
+            content=content_signals,
+            behavior=behavior_signals,
+            network=network_signals,
         )
 
     async def _analyze_profile(self, context: MessageContext) -> ProfileSignals:

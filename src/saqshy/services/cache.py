@@ -42,7 +42,7 @@ import json
 import time
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 
 import redis.asyncio as redis
 import structlog
@@ -246,8 +246,8 @@ class CacheService:
         self.default_ttl = default_ttl
         self.pool_size = pool_size
 
-        self._client: redis.Redis | None = None
-        self._pool: ConnectionPool | None = None
+        self._client: redis.Redis[Any] | None = None
+        self._pool: ConnectionPool[Any] | None = None
         self._circuit_breaker = CircuitBreaker()
         self._connected = False
 
@@ -296,7 +296,7 @@ class CacheService:
         Should be called during application shutdown.
         """
         if self._client:
-            await self._client.aclose()
+            await self._client.aclose()  # type: ignore[attr-defined]
             self._client = None
 
         if self._pool:
@@ -370,7 +370,8 @@ class CacheService:
         Returns:
             Cached value or None.
         """
-        return await self._execute("get", key, default=None)
+        result = await self._execute("get", key, default=None)
+        return cast(str | None, result)
 
     async def set(
         self,
@@ -432,7 +433,7 @@ class CacheService:
         value = await self.get(key)
         if value:
             try:
-                return json.loads(value)
+                return cast(dict[str, Any], json.loads(value))
             except json.JSONDecodeError:
                 logger.warning("invalid_json_in_cache", key=key)
                 return None
@@ -950,7 +951,7 @@ class CacheService:
         value = await self._execute("get", key, default=None)
 
         if value is not None:
-            return value == "1"
+            return bool(value == "1")
         return None
 
     async def cache_subscription_status(
@@ -1024,7 +1025,7 @@ class CacheService:
         value = await self._execute("get", key, default=None)
 
         if value is not None:
-            return value == "1"
+            return bool(value == "1")
         return None
 
     # =========================================================================

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Any, Generic, TypeVar
+from uuid import UUID
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,11 +54,11 @@ class BaseRepository(Generic[ModelT]):
         self.session = session
         self.model_class = model_class
 
-    async def get_by_id(self, id: int | str) -> ModelT | None:
+    async def get_by_id(self, id: int | str | UUID) -> ModelT | None:
         """Get a record by its primary key.
 
         Args:
-            id: Primary key value (int for Telegram IDs, str for UUIDs)
+            id: Primary key value (int for Telegram IDs, str/UUID for UUIDs)
 
         Returns:
             Model instance if found, None otherwise

@@ -402,9 +402,13 @@ class EmbeddingsService:
 
             # Build result with zeros for empty texts
             result: list[list[float]] = [[0.0] * EMBEDDING_DIMENSION for _ in texts]
-            for i, (original_idx, _) in enumerate(non_empty):
-                if i < len(response.embeddings):
-                    result[original_idx] = list(response.embeddings[i])
+            embeddings = response.embeddings
+            # Handle both list[list[float]] and EmbedByTypeResponseEmbeddings
+            if hasattr(embeddings, "__iter__") and not isinstance(embeddings, dict):
+                embeddings_list = list(embeddings)
+                for i, (original_idx, _) in enumerate(non_empty):
+                    if i < len(embeddings_list):
+                        result[original_idx] = [float(x) for x in embeddings_list[i]]
 
             logger.info(
                 "embeddings_generated",

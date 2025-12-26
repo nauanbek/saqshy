@@ -67,17 +67,16 @@ class AdminFilter(Filter):
             return user_is_admin
 
         # Extract message from event
+        user = event.from_user
+        if user is None:
+            return False
+
         if isinstance(event, CallbackQuery):
             message = event.message
-            user = event.from_user
             if not message:
                 return False
         else:
             message = event
-            user = event.from_user
-
-        if not user:
-            return False
 
         # Private chats - user is always "admin"
         if message.chat.type == "private":
@@ -214,7 +213,7 @@ class IsGroupAdmin(Filter):
         """
         if isinstance(event, CallbackQuery):
             message = event.message
-            if not message:
+            if not message or not isinstance(message, Message):
                 return False
         else:
             message = event

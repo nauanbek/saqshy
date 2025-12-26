@@ -24,7 +24,7 @@ from aiogram import Bot, F, Router
 from aiogram.exceptions import (
     TelegramBadRequest,
 )
-from aiogram.types import CallbackQuery, ChatPermissions
+from aiogram.types import CallbackQuery, ChatPermissions, Message
 
 from saqshy.bot.filters.admin import AdminFilter
 
@@ -80,7 +80,7 @@ async def callback_review_approve(
 
         # Edit the review message to show approval
         admin_name = callback.from_user.first_name if callback.from_user else "Admin"
-        if callback.message:
+        if callback.message and isinstance(callback.message, Message):
             try:
                 new_text = callback.message.text or ""
                 new_text += f"\n\n<b>APPROVED</b> by {admin_name}"
@@ -141,7 +141,7 @@ async def callback_review_reject(
 
         # Edit the review message to show rejection
         admin_name = callback.from_user.first_name if callback.from_user else "Admin"
-        if callback.message:
+        if callback.message and isinstance(callback.message, Message):
             try:
                 new_text = callback.message.text or ""
                 new_text += f"\n\n<b>REJECTED</b> by {admin_name}"

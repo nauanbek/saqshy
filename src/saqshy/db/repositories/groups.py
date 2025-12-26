@@ -7,9 +7,9 @@ including settings management and statistics tracking.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -218,7 +218,7 @@ class GroupRepository(BaseRepository[Group]):
             .where(Group.id == chat_id)
             .values(blocked_count=Group.blocked_count + amount)
         )
-        result = await self.session.execute(stmt)
+        result = cast(CursorResult[Any], await self.session.execute(stmt))
         await self.session.flush()
         return result.rowcount > 0
 
@@ -237,7 +237,7 @@ class GroupRepository(BaseRepository[Group]):
             True if group was found and updated, False otherwise
         """
         stmt = update(Group).where(Group.id == chat_id).values(members_count=members_count)
-        result = await self.session.execute(stmt)
+        result = cast(CursorResult[Any], await self.session.execute(stmt))
         await self.session.flush()
         return result.rowcount > 0
 
@@ -258,7 +258,7 @@ class GroupRepository(BaseRepository[Group]):
             True if group was found and updated, False otherwise
         """
         stmt = update(Group).where(Group.id == chat_id).values(is_active=is_active)
-        result = await self.session.execute(stmt)
+        result = cast(CursorResult[Any], await self.session.execute(stmt))
         await self.session.flush()
         return result.rowcount > 0
 

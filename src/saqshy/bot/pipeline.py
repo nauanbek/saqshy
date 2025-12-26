@@ -1250,3 +1250,87 @@ class MessagePipeline:
                 health["cache"] = False
 
         return health
+
+
+# =============================================================================
+# Pipeline Factory
+# =============================================================================
+
+
+def create_pipeline(
+    group_type: str,
+    cache_service: CacheService | None = None,
+    spam_db: SpamDB | SpamDBService | None = None,
+    channel_subscription_service: ChannelSubscriptionService | None = None,
+    llm_service: LLMService | None = None,
+    metrics_collector: MetricsCollector | None = None,
+    audit_trail: AuditTrail | None = None,
+) -> MessagePipeline:
+    """
+    Factory function to create a MessagePipeline from middleware-injected services.
+
+    This function creates all necessary analyzers and wires them together
+    with the provided services. Use this instead of constructing MessagePipeline
+    directly when working with aiogram handlers.
+
+    Args:
+        group_type: Group type string (general/tech/deals/crypto) for RiskCalculator.
+        cache_service: Optional CacheService for caching decisions and user history.
+        spam_db: Optional SpamDB service for vector similarity search.
+        channel_subscription_service: Optional service for checking channel subscriptions.
+        llm_service: Optional LLMService for gray zone (60-80 score) decisions.
+        metrics_collector: Optional MetricsCollector for observability.
+        audit_trail: Optional AuditTrail for decision logging.
+
+    Returns:
+        Configured MessagePipeline instance ready for processing.
+
+    Example:
+        >>> from saqshy.bot.pipeline import create_pipeline
+        >>>
+        >>> # In aiogram handler:
+        >>> pipeline = create_pipeline(
+        ...     group_type="deals",
+        ...     cache_service=cache_service,
+        ...     spam_db=spam_db,
+        ...     llm_service=llm_service,
+        ... )
+        >>> result = await pipeline.process(context)
+    """
+    from saqshy.core.types import GroupType
+
+    # Convert string to GroupType enum
+    try:
+        group_type_enum = GroupType(group_type.lower())
+    except ValueError:
+        logger.warning(
+            "invalid_group_type_defaulting",
+            provided=group_type,
+            default="general",
+        )
+        group_type_enum = GroupType.GENERAL
+
+    # Create analyzers
+    content_analyzer = ContentAnalyzer()
+    profile_analyzer = ProfileAnalyzer()
+    behavior_analyzer = BehaviorAnalyzer(
+        history_provider=cache_service,
+        subscription_checker=channel_subscription_service,
+    )
+
+    # Create risk calculator with group type
+    risk_calculator = RiskCalculator(group_type=group_type_enum)
+
+    # Create and return the pipeline
+    return MessagePipeline(
+        risk_calculator=risk_calculator,
+        content_analyzer=content_analyzer,
+        profile_analyzer=profile_analyzer,
+        behavior_analyzer=behavior_analyzer,
+        spam_db=spam_db,
+        llm_service=llm_service,
+        cache_service=cache_service,
+        channel_subscription=channel_subscription_service,
+        metrics_collector=metrics_collector,
+        audit_trail=audit_trail,
+    )

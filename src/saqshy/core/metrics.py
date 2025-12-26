@@ -24,6 +24,7 @@ Example:
 from __future__ import annotations
 
 import time
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -915,13 +916,21 @@ class MetricsCollector:
         latency_ms: float,
         ttl: int = DAILY_WINDOW,
     ) -> None:
-        """Add a latency value to a sorted set."""
+        """
+        Add a latency value to a sorted set.
+
+        Uses unique member (timestamp + UUID suffix) with latency as score.
+        This allows ZRANGEBYSCORE for percentile calculation without collisions.
+        """
         if not self.cache._client:
             return
 
         try:
             ts = time.time()
-            await self.cache._client.zadd(key, {str(latency_ms): ts})
+            # Use unique member with latency as score for percentile queries
+            # Format: "{timestamp}:{uuid_suffix}" -> score is latency_ms
+            member = f"{ts}:{uuid.uuid4().hex[:8]}"
+            await self.cache._client.zadd(key, {member: latency_ms})
             await self.cache._client.expire(key, ttl)
         except Exception as e:
             logger.debug(
@@ -931,6 +940,61 @@ class MetricsCollector:
                 error=str(e),
                 error_type=type(e).__name__,
             )
+
+    async def _get_latency_percentile(
+        self,
+        key: str,
+        percentile: float,
+    ) -> float:
+        """
+        Get latency at given percentile from ZSET.
+
+        Since latency values are stored as scores, we use ZRANGE with BYSCORE
+        to efficiently calculate percentiles.
+
+        Args:
+            key: Redis key for the latency ZSET
+            percentile: Percentile to calculate (0.0 - 1.0, e.g., 0.95 for p95)
+
+        Returns:
+            Latency value at the given percentile, or 0.0 if unavailable
+        """
+        if not self.cache._client:
+            return 0.0
+
+        try:
+            # Get total count
+            count = await self.cache._client.zcard(key)
+            if count == 0:
+                return 0.0
+
+            # Calculate rank for percentile
+            rank = int(count * percentile)
+            rank = min(rank, count - 1)  # Ensure within bounds
+
+            # Get member at rank with score (score is the latency)
+            result = await self.cache._client.zrange(
+                key,
+                rank,
+                rank,
+                withscores=True,
+            )
+
+            if result:
+                # Result is list of (member, score) tuples, score is latency
+                return float(result[0][1])
+
+            return 0.0
+
+        except Exception as e:
+            logger.debug(
+                "latency_percentile_query_failed",
+                key=key,
+                percentile=percentile,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            return 0.0
 
     async def _sum_hourly_keys(
         self,
@@ -973,9 +1037,74 @@ class MetricsCollector:
         hours: int,
         now: datetime,
     ) -> int:
-        """Sum values across hourly keys matching a pattern."""
-        # Simplified implementation - in production you'd use SCAN
-        return 0
+        """
+        Sum values across hourly keys matching a pattern.
+
+        Uses Redis SCAN to iterate keys matching the pattern for each hour
+        in the time window. Pattern should contain a wildcard (*) for the
+        variable component (e.g., threat_type).
+
+        Args:
+            pattern: Redis key pattern with wildcard (e.g., "prefix:group:*")
+            hours: Number of hours to look back
+            now: Current timestamp
+
+        Returns:
+            Sum of all matching key values
+        """
+        if not self.cache._client:
+            return 0
+
+        total = 0
+
+        for i in range(hours):
+            hour = now - timedelta(hours=i)
+            hour_key = hour.strftime("%Y%m%d%H")
+
+            # Build the full pattern for this hour
+            # Pattern format: "prefix:group_type:*" -> "prefix:group_type:*:YYYYMMDDHH"
+            hour_pattern = f"{pattern}:{hour_key}"
+
+            try:
+                # Use SCAN to find keys matching the pattern
+                cursor = 0
+                while True:
+                    cursor, keys = await self.cache._client.scan(
+                        cursor=cursor,
+                        match=hour_pattern,
+                        count=100,
+                    )
+
+                    for key in keys:
+                        try:
+                            # Decode key if bytes
+                            if isinstance(key, bytes):
+                                key = key.decode("utf-8")
+                            value = await self.cache._client.get(key)
+                            if value:
+                                if isinstance(value, bytes):
+                                    value = value.decode("utf-8")
+                                total += int(value)
+                        except (ValueError, TypeError) as e:
+                            logger.debug(
+                                "redis_pattern_value_parse_failed",
+                                key=key,
+                                error=str(e),
+                            )
+
+                    # cursor is 0 when scan is complete
+                    if cursor == 0:
+                        break
+
+            except Exception as e:
+                logger.debug(
+                    "redis_scan_pattern_failed",
+                    pattern=hour_pattern,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+
+        return total
 
 
 # =============================================================================

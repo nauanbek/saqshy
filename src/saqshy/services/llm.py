@@ -461,7 +461,9 @@ Provide your verdict as JSON only."""
 
         # Extract text from response
         if response.content and len(response.content) > 0:
-            return response.content[0].text
+            block = response.content[0]
+            if hasattr(block, "text"):
+                return block.text  # type: ignore[union-attr]
         return ""
 
     async def analyze_message(

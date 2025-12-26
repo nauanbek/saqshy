@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 import structlog
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 
 from saqshy.bot.filters.admin import AdminFilter
 
@@ -79,7 +79,7 @@ async def _handle_start_private(
             [
                 InlineKeyboardButton(
                     text="Open Settings",
-                    web_app={"url": "https://app.saqshy.bot"},  # Mini App URL
+                    web_app=WebAppInfo(url="https://app.saqshy.bot"),  # Mini App URL
                 ),
             ],
             [
@@ -296,7 +296,7 @@ async def cmd_settings(
             [
                 InlineKeyboardButton(
                     text="Open Full Settings",
-                    web_app={"url": f"https://app.saqshy.bot/group/{chat_id}"},
+                    web_app=WebAppInfo(url=f"https://app.saqshy.bot/group/{chat_id}"),
                 ),
             ],
             [

@@ -529,6 +529,37 @@ def _get_update_type(update) -> str:
 # =============================================================================
 
 
+# Path to Mini App static files
+_MINI_APP_STATIC_PATH = Path(__file__).parent / "static" / "mini_app"
+
+
+async def spa_fallback_handler(request: web.Request) -> web.FileResponse:
+    """
+    Serve index.html for any /app/* route that doesn't match a static file.
+
+    This enables React Router client-side routing. When a user navigates
+    directly to /app/settings or refreshes on /app/reviews, we serve
+    index.html and let React Router handle the route.
+
+    Returns:
+        FileResponse with index.html
+    """
+    index_path = _MINI_APP_STATIC_PATH / "index.html"
+
+    if not index_path.exists():
+        logger.warning(
+            "mini_app_not_deployed",
+            path=str(_MINI_APP_STATIC_PATH),
+            message="Mini App frontend not found. Run 'npm run build' in mini_app_frontend/",
+        )
+        raise web.HTTPNotFound(text="Mini App not deployed")
+
+    return web.FileResponse(
+        index_path,
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 def create_routes(app: web.Application) -> None:
     """Configure all application routes."""
     # Health endpoints using HealthChecker
@@ -548,10 +579,30 @@ def create_routes(app: web.Application) -> None:
     setup_mini_app_routes(app)
 
     # Serve static files for Mini App frontend (production)
-    static_path = Path(__file__).parent / "static" / "mini_app"
-    if static_path.exists():
-        app.router.add_static("/app/", static_path, name="mini_app_static")
-        logger.info("static_files_configured", path=str(static_path))
+    # Route order matters for SPA support:
+    # 1. /app/assets/* - Static assets (JS, CSS, images) with caching
+    # 2. /app/{path} - SPA fallback serves index.html for all other routes
+    if _MINI_APP_STATIC_PATH.exists():
+        assets_path = _MINI_APP_STATIC_PATH / "assets"
+        if assets_path.exists():
+            app.router.add_static(
+                "/app/assets/",
+                assets_path,
+                name="mini_app_assets",
+                append_version=True,
+            )
+
+        # SPA fallback routes - serve index.html for all /app/* paths
+        # This enables React Router client-side routing
+        app.router.add_get("/app", spa_fallback_handler, name="spa_root_redirect")
+        app.router.add_get("/app/", spa_fallback_handler, name="spa_root")
+        app.router.add_get("/app/{path:.*}", spa_fallback_handler, name="spa_fallback")
+
+        logger.info(
+            "spa_routing_configured",
+            path=str(_MINI_APP_STATIC_PATH),
+            routes=["/app/", "/app/{path}"],
+        )
 
 
 def create_middlewares(app: web.Application) -> list:

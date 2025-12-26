@@ -14,7 +14,7 @@ Key principles:
 4. Scores are clamped to 0-100 range
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from saqshy.core.constants import (
     BEHAVIOR_WEIGHTS,
@@ -50,14 +50,8 @@ class ScoreBreakdown:
     behavior_score: int = 0
     network_score: int = 0
     total_score: int = 0
-    contributing_factors: list[str] = None
-    mitigating_factors: list[str] = None
-
-    def __post_init__(self):
-        if self.contributing_factors is None:
-            self.contributing_factors = []
-        if self.mitigating_factors is None:
-            self.mitigating_factors = []
+    contributing_factors: list[str] = field(default_factory=list)
+    mitigating_factors: list[str] = field(default_factory=list)
 
 
 class RiskCalculator:

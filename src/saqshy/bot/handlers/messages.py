@@ -37,26 +37,21 @@ from aiogram.exceptions import (
 )
 from aiogram.types import Message
 
-from saqshy.analyzers.behavior import BehaviorAnalyzer
-from saqshy.analyzers.content import ContentAnalyzer
-from saqshy.analyzers.profile import ProfileAnalyzer
 from saqshy.bot.action_engine import ActionEngine
-from saqshy.core.risk_calculator import RiskCalculator
+from saqshy.bot.pipeline import create_pipeline
 from saqshy.core.types import (
-    BehaviorSignals,
-    ContentSignals,
     GroupType,
     MessageContext,
-    NetworkSignals,
-    ProfileSignals,
     RiskResult,
-    Signals,
     Verdict,
 )
 
 if TYPE_CHECKING:
+    from saqshy.core.audit import AuditTrail
+    from saqshy.core.metrics import MetricsCollector
     from saqshy.services.cache import CacheService
     from saqshy.services.channel_subscription import ChannelSubscriptionService
+    from saqshy.services.llm import LLMService
     from saqshy.services.spam_db import SpamDB
 
 logger = structlog.get_logger(__name__)
@@ -65,9 +60,6 @@ router = Router(name="messages")
 
 # Timeout for the entire pipeline (excluding LLM)
 PIPELINE_TIMEOUT_SECONDS = 5.0
-
-# Timeout for individual analyzer operations
-ANALYZER_TIMEOUT_SECONDS = 2.0
 
 # Timeout for Telegram API operations
 TELEGRAM_API_TIMEOUT_SECONDS = 30.0
@@ -85,6 +77,9 @@ async def handle_group_message(
     cache_service: CacheService | None = None,
     spam_db: SpamDB | None = None,
     channel_subscription_service: ChannelSubscriptionService | None = None,
+    llm_service: LLMService | None = None,
+    metrics_collector: MetricsCollector | None = None,
+    audit_trail: AuditTrail | None = None,
     correlation_id: str | None = None,
     user_is_admin: bool = False,
     user_is_whitelisted: bool = False,
@@ -93,7 +88,11 @@ async def handle_group_message(
     Handle incoming group messages through the spam detection pipeline.
 
     This is the main entry point for spam detection. Processes messages
-    through the Parse -> Analyze -> Decide -> Act -> Log flow.
+    through the full MessagePipeline which includes:
+    - Parallel analyzer execution with circuit breakers
+    - Decision caching for repeated messages
+    - LLM gray zone handling (60-80 score range)
+    - Comprehensive metrics and audit trail
 
     Args:
         message: Incoming Telegram message.
@@ -101,6 +100,9 @@ async def handle_group_message(
         cache_service: Redis cache service (injected by middleware).
         spam_db: SpamDB service (injected via workflow_data).
         channel_subscription_service: Channel subscription checker.
+        llm_service: LLM service for gray zone decisions.
+        metrics_collector: Metrics collector for observability.
+        audit_trail: Audit trail for decision logging.
         correlation_id: Request correlation ID for tracing.
         user_is_admin: Whether user is a group admin (from AuthMiddleware).
         user_is_whitelisted: Whether user is whitelisted (from AuthMiddleware).
@@ -131,22 +133,51 @@ async def handle_group_message(
                 context.timestamp,
             )
 
-        # ANALYZE: Run all analyzers in parallel with timeout
-        signals = await _run_analyzers_with_timeout(
-            context=context,
+        # Get linked channel ID and admin IDs for pipeline
+        linked_channel_id: int | None = None
+        admin_ids: set[int] | None = None
+        if cache_service:
+            # Get linked channel ID
+            channel_setting = await cache_service.get(f"linked_channel:{context.chat_id}")
+            if channel_setting:
+                try:
+                    linked_channel_id = int(channel_setting)
+                except ValueError:
+                    pass
+
+            # Get admin IDs
+            cached_admins = await cache_service.get(f"group_admins:{context.chat_id}")
+            if cached_admins:
+                try:
+                    admin_ids = set(int(x) for x in cached_admins.split(",") if x)
+                except ValueError:
+                    pass
+
+        # Create pipeline with all services - this provides:
+        # - Circuit breakers for fault tolerance
+        # - Decision caching to avoid redundant computation
+        # - LLM integration for gray zone (60-80 score)
+        # - Metrics collection and audit trail
+        pipeline = create_pipeline(
+            group_type=context.group_type.value,
             cache_service=cache_service,
             spam_db=spam_db,
             channel_subscription_service=channel_subscription_service,
-            log=log,
+            llm_service=llm_service,
+            metrics_collector=metrics_collector,
+            audit_trail=audit_trail,
         )
 
-        # DECIDE: Calculate risk score
-        calculator = RiskCalculator(group_type=context.group_type)
-        result = calculator.calculate(signals)
+        # ANALYZE + DECIDE: Process through full pipeline
+        result = await pipeline.process(
+            context=context,
+            linked_channel_id=linked_channel_id,
+            admin_ids=admin_ids,
+        )
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         log.info(
-            "risk_calculated",
+            "pipeline_completed",
             score=result.score,
             verdict=result.verdict.value,
             threat_type=result.threat_type.value,
@@ -380,194 +411,6 @@ async def _record_message_timestamp(
 
 
 # =============================================================================
-# Analyzer Execution
-# =============================================================================
-
-
-async def _run_analyzers_with_timeout(
-    context: MessageContext,
-    cache_service: CacheService | None,
-    spam_db: SpamDB | None,
-    channel_subscription_service: ChannelSubscriptionService | None,
-    log: Any,
-) -> Signals:
-    """
-    Run all analyzers in parallel with timeout.
-
-    Each analyzer has its own timeout, and the overall pipeline
-    has a global timeout.
-
-    Args:
-        context: Message context for analysis.
-        cache_service: Redis cache service.
-        spam_db: SpamDB service for spam pattern matching.
-        channel_subscription_service: Channel subscription checker.
-        log: Bound logger with context.
-
-    Returns:
-        Combined Signals from all analyzers.
-    """
-    # Initialize analyzers
-    profile_analyzer = ProfileAnalyzer()
-    content_analyzer = ContentAnalyzer()
-    behavior_analyzer = BehaviorAnalyzer(
-        history_provider=cache_service,
-        subscription_checker=channel_subscription_service,
-    )
-
-    # Get group admin IDs for reply-to-admin detection
-    admin_ids: set[int] | None = None
-    if cache_service:
-        cached_admins = await cache_service.get(f"group_admins:{context.chat_id}")
-        if cached_admins:
-            try:
-                admin_ids = set(int(x) for x in cached_admins.split(",") if x)
-            except ValueError:
-                pass
-
-    # Get linked channel ID for subscription checking
-    linked_channel_id: int | None = None
-    if cache_service:
-        channel_setting = await cache_service.get(f"linked_channel:{context.chat_id}")
-        if channel_setting:
-            try:
-                linked_channel_id = int(channel_setting)
-            except ValueError:
-                pass
-
-    # Run analyzers in parallel
-    async def run_profile() -> ProfileSignals:
-        try:
-            return await asyncio.wait_for(
-                profile_analyzer.analyze(context),
-                timeout=ANALYZER_TIMEOUT_SECONDS,
-            )
-        except TimeoutError:
-            log.warning("profile_analyzer_timeout")
-            return ProfileSignals()
-        except asyncio.CancelledError:
-            log.warning("profile_analyzer_cancelled")
-            raise
-        except ValueError as e:
-            log.warning("profile_analyzer_validation_error", error=str(e))
-            return ProfileSignals()
-        except Exception as e:
-            log.warning(
-                "profile_analyzer_unexpected_error",
-                error=str(e),
-                error_type=type(e).__name__,
-            )
-            return ProfileSignals()
-
-    async def run_content() -> ContentSignals:
-        try:
-            return await asyncio.wait_for(
-                content_analyzer.analyze(context),
-                timeout=ANALYZER_TIMEOUT_SECONDS,
-            )
-        except TimeoutError:
-            log.warning("content_analyzer_timeout")
-            return ContentSignals()
-        except asyncio.CancelledError:
-            log.warning("content_analyzer_cancelled")
-            raise
-        except ValueError as e:
-            log.warning("content_analyzer_validation_error", error=str(e))
-            return ContentSignals()
-        except Exception as e:
-            log.warning(
-                "content_analyzer_unexpected_error",
-                error=str(e),
-                error_type=type(e).__name__,
-            )
-            return ContentSignals()
-
-    async def run_behavior() -> BehaviorSignals:
-        try:
-            return await asyncio.wait_for(
-                behavior_analyzer.analyze(
-                    context,
-                    linked_channel_id=linked_channel_id,
-                    admin_ids=admin_ids,
-                ),
-                timeout=ANALYZER_TIMEOUT_SECONDS,
-            )
-        except TimeoutError:
-            log.warning("behavior_analyzer_timeout")
-            return BehaviorSignals()
-        except asyncio.CancelledError:
-            log.warning("behavior_analyzer_cancelled")
-            raise
-        except TelegramBadRequest as e:
-            log.warning("behavior_analyzer_telegram_error", error=str(e))
-            return BehaviorSignals()
-        except TelegramRetryAfter as e:
-            log.warning(
-                "behavior_analyzer_rate_limited",
-                retry_after=e.retry_after,
-            )
-            return BehaviorSignals()
-        except ValueError as e:
-            log.warning("behavior_analyzer_validation_error", error=str(e))
-            return BehaviorSignals()
-        except Exception as e:
-            log.warning(
-                "behavior_analyzer_unexpected_error",
-                error=str(e),
-                error_type=type(e).__name__,
-            )
-            return BehaviorSignals()
-
-    async def run_spam_db() -> NetworkSignals:
-        if spam_db is None or not context.text:
-            return NetworkSignals()
-
-        try:
-            similarity, matched_pattern = await asyncio.wait_for(
-                spam_db.check_spam(context.text),
-                timeout=ANALYZER_TIMEOUT_SECONDS,
-            )
-            return NetworkSignals(
-                spam_db_similarity=similarity,
-                spam_db_matched_pattern=matched_pattern,
-            )
-        except TimeoutError:
-            log.warning("spam_db_timeout")
-            return NetworkSignals()
-        except asyncio.CancelledError:
-            log.warning("spam_db_cancelled")
-            raise
-        except ConnectionError as e:
-            log.warning("spam_db_connection_error", error=str(e))
-            return NetworkSignals()
-        except ValueError as e:
-            log.warning("spam_db_validation_error", error=str(e))
-            return NetworkSignals()
-        except Exception as e:
-            log.warning(
-                "spam_db_unexpected_error",
-                error=str(e),
-                error_type=type(e).__name__,
-            )
-            return NetworkSignals()
-
-    # Execute all analyzers in parallel
-    profile_signals, content_signals, behavior_signals, network_signals = await asyncio.gather(
-        run_profile(),
-        run_content(),
-        run_behavior(),
-        run_spam_db(),
-    )
-
-    return Signals(
-        profile=profile_signals,
-        content=content_signals,
-        behavior=behavior_signals,
-        network=network_signals,
-    )
-
-
-# =============================================================================
 # Action Execution
 # =============================================================================
 
@@ -583,7 +426,10 @@ async def _execute_action(
     """
     Execute action based on risk verdict.
 
-    Actions are executed with timeout handling and proper error recovery.
+    Uses ActionEngine for consistent action execution with:
+    - Timeout handling and proper error recovery
+    - Idempotency to prevent duplicate actions
+    - Logging of all decisions and outcomes
 
     Args:
         message: Original Telegram message.
@@ -593,30 +439,34 @@ async def _execute_action(
         cache_service: Redis cache service.
         log: Bound logger with context.
     """
-    action_engine = ActionEngine(group_type=context.group_type)
+    action_engine = ActionEngine(
+        bot=bot,
+        cache_service=cache_service,
+        group_type=context.group_type,
+    )
 
     try:
-        # Determine what action to take
-        should_delete = action_engine.should_delete_message(result.verdict)
-        should_restrict = action_engine.should_restrict_user(result.verdict)
-        should_notify = action_engine.should_notify_admins(result.verdict)
+        # Execute actions through ActionEngine
+        execution_result = await action_engine.execute(
+            risk_result=result,
+            message=message,
+        )
 
-        # Execute delete if needed
-        if should_delete:
-            await _safe_delete_message(bot, message.chat.id, message.message_id, log)
+        # Count failed actions
+        failed_count = sum(
+            1 for a in execution_result.actions_attempted if not a.success
+        )
 
-        # Execute restriction if needed
-        if should_restrict and message.from_user:
-            duration = action_engine._calculate_duration(result)
-            await _safe_restrict_user(
-                bot,
-                message.chat.id,
-                message.from_user.id,
-                duration,
-                log,
-            )
+        log.info(
+            "action_executed",
+            message_deleted=execution_result.message_deleted,
+            user_restricted=execution_result.user_restricted,
+            user_banned=execution_result.user_banned,
+            admins_notified=execution_result.admins_notified,
+            failed_actions=failed_count,
+        )
 
-        # Send to review queue if needed
+        # Send to review queue if needed (REVIEW verdict gets special handling)
         if result.verdict == Verdict.REVIEW:
             await _send_to_review_queue(
                 bot=bot,
@@ -626,14 +476,6 @@ async def _execute_action(
                 cache_service=cache_service,
                 log=log,
             )
-
-        log.info(
-            "action_executed",
-            verdict=result.verdict.value,
-            deleted=should_delete,
-            restricted=should_restrict,
-            notified=should_notify,
-        )
 
     except asyncio.CancelledError:
         log.warning("action_execution_cancelled")

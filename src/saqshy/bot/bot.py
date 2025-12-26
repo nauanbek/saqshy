@@ -98,6 +98,7 @@ def create_dispatcher(
     # Import middlewares
     from saqshy.bot.middlewares import (
         AuthMiddleware,
+        ConfigMiddleware,
         ErrorMiddleware,
         LoggingMiddleware,
         RateLimitMiddleware,
@@ -112,7 +113,12 @@ def create_dispatcher(
     dp.chat_member.outer_middleware(ErrorMiddleware())
 
     # Inner middlewares execute in registration order
-    # LoggingMiddleware first - logs all requests with correlation ID
+    # ConfigMiddleware first - injects config values into handler data
+    config_middleware = ConfigMiddleware(mini_app_url=mini_app_url)
+    dp.message.middleware(config_middleware)
+    dp.callback_query.middleware(config_middleware)
+
+    # LoggingMiddleware - logs all requests with correlation ID
     dp.message.middleware(LoggingMiddleware())
     dp.callback_query.middleware(LoggingMiddleware())
     dp.chat_member.middleware(LoggingMiddleware())
@@ -128,7 +134,7 @@ def create_dispatcher(
         "dispatcher_created",
         router="main",
         sub_routers=["commands", "callbacks", "members", "messages"],
-        middlewares=["error", "logging", "auth", "rate_limit"],
+        middlewares=["error", "config", "logging", "auth", "rate_limit"],
     )
 
     return dp

@@ -29,6 +29,7 @@ from saqshy.bot.middlewares.auth import (
     check_user_is_admin,
     refresh_admin_cache,
 )
+from saqshy.bot.middlewares.config import ConfigMiddleware
 from saqshy.bot.middlewares.error import (
     CircuitBreaker,
     CircuitBreakerOpen,
@@ -54,6 +55,7 @@ __all__ = [
     "LoggingMiddleware",
     "MetricsMiddleware",
     "ErrorMiddleware",
+    "ConfigMiddleware",
     # Error handling utilities
     "CircuitBreaker",
     "CircuitBreakerOpen",

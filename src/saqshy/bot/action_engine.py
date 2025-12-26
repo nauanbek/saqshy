@@ -159,8 +159,8 @@ class ExecutionResult:
 VERDICT_ACTIONS: dict[Verdict, list[str]] = {
     Verdict.ALLOW: [],  # No action needed
     Verdict.WATCH: ["log"],  # Log only
-    Verdict.LIMIT: ["restrict", "log", "notify_admins"],  # Temporary restriction
-    Verdict.REVIEW: ["hold", "log", "queue_review", "notify_admins"],  # Admin review
+    Verdict.LIMIT: ["delete", "restrict", "log", "notify_admins"],  # Delete + temp restriction
+    Verdict.REVIEW: ["hold", "log", "queue_review", "notify_admins"],  # Hold for admin review
     Verdict.BLOCK: ["delete", "ban", "log", "notify_admins"],  # Full block
 }
 

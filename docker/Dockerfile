@@ -86,9 +86,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
     rm -rf /wheels
 
 # Copy only necessary files
+# Note: Alembic migrations are in src/saqshy/db/migrations/
 COPY src/ ./src/
 COPY scripts/ ./scripts/
-COPY alembic/ ./alembic/
 COPY alembic.ini ./
 
 # Set ownership

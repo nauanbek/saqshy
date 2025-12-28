@@ -265,7 +265,8 @@ async def get_group_settings(
     """
     Get group settings.
 
-    Requires admin authentication.
+    Requires admin authentication. If group doesn't exist in the database,
+    it will be auto-created on first admin access.
 
     Returns:
         APIResponse with GroupSettingsResponse data.
@@ -287,11 +288,74 @@ async def get_group_settings(
     group_repo = GroupRepository(session)
     group = await group_repo.get_by_id(group_id)
 
+    # Auto-create group if it doesn't exist (first Mini App access)
     if group is None:
-        return APIResponse.fail(
-            "NOT_FOUND",
-            f"Group {group_id} not found",
-        ).model_dump()
+        logger.info(
+            "auto_creating_group",
+            group_id=group_id,
+            user_id=user_id,
+        )
+
+        # Get bot instance to fetch group info from Telegram
+        bot = request.app.get("bot")
+        if bot is None:
+            logger.error("bot_not_available_for_group_creation", group_id=group_id)
+            return APIResponse.fail(
+                "SERVICE_UNAVAILABLE",
+                "Bot service not available. Please try again later.",
+            ).model_dump()
+
+        try:
+            # Fetch group info from Telegram
+            chat = await bot.get_chat(group_id)
+            title = chat.title or f"Group {group_id}"
+            username = chat.username
+
+            # Create group in database with default settings
+            group, created = await group_repo.create_or_update(
+                chat_id=group_id,
+                title=title,
+                username=username,
+                group_type=GroupType.GENERAL,
+                members_count=chat.member_count if hasattr(chat, 'member_count') else None,
+            )
+
+            if created:
+                logger.info(
+                    "group_auto_created",
+                    group_id=group_id,
+                    title=title,
+                    user_id=user_id,
+                )
+
+                # Also register the admin user as a member with ADMIN trust level
+                if user_id:
+                    member_repo = GroupMemberRepository(session)
+                    await member_repo.create_or_update_member(
+                        group_id=group_id,
+                        user_id=user_id,
+                        trust_level=TrustLevel.ADMIN,
+                    )
+
+                await session.commit()
+            else:
+                logger.info(
+                    "group_already_existed",
+                    group_id=group_id,
+                    title=title,
+                )
+
+        except Exception as e:
+            logger.error(
+                "group_auto_creation_failed",
+                group_id=group_id,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            return APIResponse.fail(
+                "NOT_FOUND",
+                f"Could not access group {group_id}. Make sure the bot is added to the group.",
+            ).model_dump()
 
     settings = _group_to_settings_response(group)
     return APIResponse.ok(settings.model_dump()).model_dump()

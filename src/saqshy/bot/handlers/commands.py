@@ -290,16 +290,18 @@ async def cmd_settings(
         return
 
     chat_id = message.chat.id
+    bot_info = await message.bot.get_me()  # type: ignore[union-attr]
 
     # Build settings keyboard
     buttons = []
 
-    # Add Mini App button only if URL is configured and valid (HTTPS required)
-    # Note: WebApp buttons don't work in groups, only in private chats.
-    # Use regular URL button instead - opens in browser/Telegram's in-app browser.
-    if mini_app_url and mini_app_url.startswith("https://"):
-        # Use query parameter format: ?group_id=XXX
-        settings_url = f"{mini_app_url}?group_id={chat_id}"
+    # Add Mini App button using t.me deep link with startapp parameter.
+    # This opens the Mini App with full Telegram WebApp context (initData),
+    # unlike regular URL buttons which open in browser without auth context.
+    # Format: t.me/<bot_username>?startapp=group_<chat_id>
+    if mini_app_url and mini_app_url.startswith("https://") and bot_info.username:
+        # Use startapp deep link - opens Mini App with full WebApp context
+        settings_url = f"https://t.me/{bot_info.username}?startapp=group_{chat_id}"
         buttons.append([
             InlineKeyboardButton(
                 text="Open Full Settings",

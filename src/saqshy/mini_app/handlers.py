@@ -328,8 +328,24 @@ async def get_group_settings(
                     user_id=user_id,
                 )
 
-                # Also register the admin user as a member with ADMIN trust level
+                # Register the admin user - must create user first (FK constraint)
                 if user_id:
+                    # Get user data from WebApp auth
+                    auth: WebAppAuth | None = request.get("webapp_auth")
+                    webapp_user = auth.user if auth else None
+
+                    # Create user first (required by FK constraint on group_members)
+                    user_repo = UserRepository(session)
+                    await user_repo.create_or_update(
+                        user_id=user_id,
+                        username=webapp_user.username if webapp_user else None,
+                        first_name=webapp_user.first_name if webapp_user else None,
+                        last_name=webapp_user.last_name if webapp_user else None,
+                        is_premium=webapp_user.is_premium if webapp_user else None,
+                        has_photo=webapp_user.photo_url is not None if webapp_user else None,
+                    )
+
+                    # Now create the group member
                     member_repo = GroupMemberRepository(session)
                     await member_repo.create_or_update_member(
                         group_id=group_id,
@@ -346,6 +362,8 @@ async def get_group_settings(
                 )
 
         except Exception as e:
+            # Rollback to clean up the session state
+            await session.rollback()
             logger.error(
                 "group_auto_creation_failed",
                 group_id=group_id,

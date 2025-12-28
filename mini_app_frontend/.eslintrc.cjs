@@ -5,10 +5,13 @@ module.exports = {
     'eslint:recommended',
     'plugin:@typescript-eslint/recommended',
     'plugin:react-hooks/recommended',
+    'plugin:jsx-a11y/recommended',
+    'plugin:@tanstack/eslint-plugin-query/recommended',
+    'prettier',
   ],
   ignorePatterns: ['dist', '.eslintrc.cjs'],
   parser: '@typescript-eslint/parser',
-  plugins: ['react-refresh'],
+  plugins: ['react-refresh', 'jsx-a11y', '@tanstack/query'],
   rules: {
     'react-refresh/only-export-components': [
       'warn',
@@ -18,5 +21,11 @@ module.exports = {
       'error',
       { argsIgnorePattern: '^_' },
     ],
+    // Accessibility rules - adjust as needed
+    'jsx-a11y/click-events-have-key-events': 'warn',
+    'jsx-a11y/no-static-element-interactions': 'warn',
+    // React Query rules
+    '@tanstack/query/exhaustive-deps': 'error',
+    '@tanstack/query/stable-query-client': 'error',
   },
 };

@@ -1,0 +1,219 @@
+/* SAQSHY Mini App - Page Layouts */
+/* Page-specific styles and layouts */
+
+/* ===========================================
+   PAGE LAYOUT
+   =========================================== */
+
+.page {
+  min-height: 100vh;
+  padding: var(--spacing-md);
+  padding-bottom: calc(var(--spacing-xl) + env(safe-area-inset-bottom));
+  animation: fade-in 0.2s ease-out;
+}
+
+.page-loading,
+.page-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.page-header {
+  margin-bottom: var(--spacing-lg);
+}
+
+.page-header h1 {
+  margin-bottom: var(--spacing-sm);
+}
+
+.page-nav {
+  display: flex;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+}
+
+.nav-link {
+  background: none;
+  border: none;
+  color: var(--tg-theme-link-color);
+  font-size: 0.875rem;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.page-content {
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+/* ===========================================
+   APP LOADING & ERROR
+   =========================================== */
+
+.app-loading,
+.app-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: var(--spacing-lg);
+}
+
+/* ===========================================
+   SETTINGS PAGE
+   =========================================== */
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+}
+
+.settings-section {
+  background-color: var(--tg-theme-secondary-bg-color);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-md);
+}
+
+.section-title {
+  margin-bottom: var(--spacing-xs);
+}
+
+.section-hint {
+  font-size: 0.875rem;
+  color: var(--tg-theme-hint-color);
+  margin-bottom: var(--spacing-md);
+}
+
+.form-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-md);
+}
+
+.unsaved-changes {
+  font-size: 0.875rem;
+  color: var(--color-warning);
+}
+
+/* ===========================================
+   STATS PAGE
+   =========================================== */
+
+.stats-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-lg);
+}
+
+.stats-actions .btn {
+  flex: 1;
+}
+
+/* ===========================================
+   REVIEW QUEUE PAGE
+   =========================================== */
+
+.review-queue {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.review-queue-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.review-count {
+  font-size: 0.875rem;
+  color: var(--tg-theme-hint-color);
+  background-color: var(--tg-theme-secondary-bg-color);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: 999px;
+}
+
+.review-queue-loading,
+.review-queue-empty {
+  text-align: center;
+  padding: var(--spacing-xl);
+}
+
+.empty-icon {
+  font-size: 3rem;
+  margin-bottom: var(--spacing-md);
+  color: var(--color-success);
+}
+
+.review-queue-empty h3 {
+  margin-bottom: var(--spacing-sm);
+}
+
+.review-queue-empty p {
+  color: var(--tg-theme-hint-color);
+}
+
+.review-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.review-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-lg);
+}
+
+.review-actions .btn {
+  flex: 1;
+}
+
+.review-actions-internal {
+  display: flex;
+  gap: var(--spacing-sm);
+}
+
+/* ===========================================
+   HEADER ACTIONS
+   =========================================== */
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.last-refresh {
+  font-size: 0.75rem;
+  color: var(--tg-theme-hint-color);
+}
+
+/* ===========================================
+   RESPONSIVE ADJUSTMENTS
+   =========================================== */
+
+@media (max-width: 360px) {
+  .page {
+    padding: var(--spacing-sm);
+  }
+
+  .type-option {
+    padding: var(--spacing-sm);
+  }
+
+  .channel-input-group {
+    flex-direction: column;
+  }
+
+  .review-item .review-actions {
+    flex-direction: column;
+  }
+}

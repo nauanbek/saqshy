@@ -5,10 +5,7 @@ interface LoadingSpinnerProps {
   text?: string;
 }
 
-export function LoadingSpinner({
-  size = 'medium',
-  text,
-}: LoadingSpinnerProps): React.ReactElement {
+export function LoadingSpinner({ size = 'medium', text }: LoadingSpinnerProps): React.ReactElement {
   const sizeMap = {
     small: 20,
     medium: 32,
@@ -18,7 +15,7 @@ export function LoadingSpinner({
   const spinnerSize = sizeMap[size];
 
   return (
-    <div className="loading-spinner-container">
+    <div className="loading-spinner-container" role="status" aria-live="polite" aria-busy="true">
       <svg
         className="loading-spinner"
         width={spinnerSize}
@@ -26,6 +23,7 @@ export function LoadingSpinner({
         viewBox="0 0 24 24"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
+        aria-hidden="true"
       >
         <circle
           className="loading-spinner-track"
@@ -44,7 +42,7 @@ export function LoadingSpinner({
           strokeLinecap="round"
         />
       </svg>
-      {text && <span className="loading-spinner-text">{text}</span>}
+      <span className={text ? 'loading-spinner-text' : 'sr-only'}>{text || 'Loading...'}</span>
     </div>
   );
 }

@@ -23,10 +23,7 @@ function StatItem({ label, value, color, total }: StatItemProps): React.ReactEle
       </div>
       {total && total > 0 && (
         <div className="stat-bar">
-          <div
-            className="stat-bar-fill"
-            style={{ width: `${Math.min(percentage, 100)}%` }}
-          />
+          <div className="stat-bar-fill" style={{ width: `${Math.min(percentage, 100)}%` }} />
         </div>
       )}
     </div>
@@ -42,8 +39,7 @@ function FalsePositiveRate({
   fpCount: number;
   blocked: number;
 }): React.ReactElement {
-  const rateColor =
-    fpRate > 0.1 ? 'red' : fpRate > 0.05 ? 'yellow' : 'green';
+  const rateColor = fpRate > 0.1 ? 'red' : fpRate > 0.05 ? 'yellow' : 'green';
   const ratePercent = (fpRate * 100).toFixed(1);
 
   return (
@@ -60,11 +56,7 @@ function FalsePositiveRate({
           High FP rate! Consider adjusting sensitivity or checking whitelist.
         </div>
       )}
-      {fpRate <= 0.05 && (
-        <div className="fp-rate-success">
-          FP rate is within target (&lt;5%)
-        </div>
-      )}
+      {fpRate <= 0.05 && <div className="fp-rate-success">FP rate is within target (&lt;5%)</div>}
     </div>
   );
 }
@@ -82,44 +74,17 @@ export function StatsCard({ stats }: StatsCardProps): React.ReactElement {
 
       <div className="stats-summary">
         <div className="stats-total">
-          <span className="stats-total-value">
-            {stats.total_messages.toLocaleString()}
-          </span>
+          <span className="stats-total-value">{stats.total_messages.toLocaleString()}</span>
           <span className="stats-total-label">Total Messages</span>
         </div>
       </div>
 
       <div className="verdict-grid">
-        <StatItem
-          label="Allowed"
-          value={stats.allowed}
-          color="green"
-          total={totalModerated}
-        />
-        <StatItem
-          label="Watched"
-          value={stats.watched}
-          color="blue"
-          total={totalModerated}
-        />
-        <StatItem
-          label="Limited"
-          value={stats.limited}
-          color="yellow"
-          total={totalModerated}
-        />
-        <StatItem
-          label="Reviewed"
-          value={stats.reviewed}
-          color="orange"
-          total={totalModerated}
-        />
-        <StatItem
-          label="Blocked"
-          value={stats.blocked}
-          color="red"
-          total={totalModerated}
-        />
+        <StatItem label="Allowed" value={stats.allowed} color="green" total={totalModerated} />
+        <StatItem label="Watched" value={stats.watched} color="blue" total={totalModerated} />
+        <StatItem label="Limited" value={stats.limited} color="yellow" total={totalModerated} />
+        <StatItem label="Reviewed" value={stats.reviewed} color="orange" total={totalModerated} />
+        <StatItem label="Blocked" value={stats.blocked} color="red" total={totalModerated} />
       </div>
 
       {stats.group_type === 'deals' && (

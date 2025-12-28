@@ -1,27 +1,44 @@
-import React, { useEffect, useState } from 'react';
-import {
-  BrowserRouter,
-  Routes,
-  Route,
-  Navigate,
-} from 'react-router-dom';
-import { GroupSettingsPage, GroupStatsPage, ReviewQueuePage } from './pages';
+import React, { useEffect, lazy, Suspense } from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { LoadingSpinner } from './components';
+import { ToastContainer } from './components/Toast';
+import { OfflineBanner } from './components/OfflineBanner';
+import { PageErrorBoundary } from './components/ErrorBoundary';
 import { useTelegram } from './hooks/useTelegram';
+import { useAppStore } from './stores';
+
+// Lazy load pages for better initial load performance
+const GroupSettingsPage = lazy(() => import('./pages/GroupSettingsPage'));
+const GroupStatsPage = lazy(() => import('./pages/GroupStatsPage'));
+const ReviewQueuePage = lazy(() => import('./pages/ReviewQueuePage'));
+
+// Page loading fallback
+function PageLoader(): React.ReactElement {
+  return (
+    <div className="page-loading">
+      <LoadingSpinner size="large" text="Loading..." />
+    </div>
+  );
+}
 
 function AppContent(): React.ReactElement {
-  const { isReady, startParam } = useTelegram();
-  const [groupId, setGroupId] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { isReady, startParam, colorScheme } = useTelegram();
+  const { groupId, setGroupId, setColorScheme, initError, setInitError, setInitialized } =
+    useAppStore();
 
+  // Sync color scheme with Telegram
   useEffect(() => {
-    // Parse group ID from start_param or URL
-    // Format: group_12345 or just 12345
+    setColorScheme(colorScheme);
+  }, [colorScheme, setColorScheme]);
+
+  // Parse group ID on mount
+  useEffect(() => {
     let id: number | null = null;
 
+    // Try to parse from start_param
     if (startParam) {
       const match = startParam.match(/^group_?(\d+)$/);
-      if (match) {
+      if (match && match[1]) {
         id = parseInt(match[1], 10);
       } else if (/^\d+$/.test(startParam)) {
         id = parseInt(startParam, 10);
@@ -39,12 +56,12 @@ function AppContent(): React.ReactElement {
 
     if (id && !isNaN(id)) {
       setGroupId(id);
+      setInitialized(true);
     } else {
-      setError(
-        'No group ID provided. Please open this app from a group settings.'
-      );
+      setInitError('No group ID provided. Please open this app from a group settings.');
+      setInitialized(true);
     }
-  }, [startParam]);
+  }, [startParam, setGroupId, setInitError, setInitialized]);
 
   if (!isReady) {
     return (
@@ -54,15 +71,13 @@ function AppContent(): React.ReactElement {
     );
   }
 
-  if (error) {
+  if (initError) {
     return (
       <div className="app-error">
         <div className="error-card">
           <h2>Configuration Error</h2>
-          <p>{error}</p>
-          <p className="error-hint">
-            Open this Mini App from a group where the bot is admin.
-          </p>
+          <p>{initError}</p>
+          <p className="error-hint">Open this Mini App from a group where the bot is admin.</p>
         </div>
       </div>
     );
@@ -77,27 +92,45 @@ function AppContent(): React.ReactElement {
   }
 
   return (
-    <Routes>
-      <Route
-        path="/app"
-        element={<GroupSettingsPage groupId={groupId} />}
-      />
-      <Route
-        path="/app/stats"
-        element={<GroupStatsPage groupId={groupId} />}
-      />
-      <Route
-        path="/app/review"
-        element={<ReviewQueuePage groupId={groupId} />}
-      />
-      <Route path="*" element={<Navigate to="/app" replace />} />
-    </Routes>
+    <>
+      <OfflineBanner />
+      <Suspense fallback={<PageLoader />}>
+        <Routes>
+          <Route
+            path="/"
+            element={
+              <PageErrorBoundary>
+                <GroupSettingsPage groupId={groupId} />
+              </PageErrorBoundary>
+            }
+          />
+          <Route
+            path="/stats"
+            element={
+              <PageErrorBoundary>
+                <GroupStatsPage groupId={groupId} />
+              </PageErrorBoundary>
+            }
+          />
+          <Route
+            path="/review"
+            element={
+              <PageErrorBoundary>
+                <ReviewQueuePage groupId={groupId} />
+              </PageErrorBoundary>
+            }
+          />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
+      <ToastContainer />
+    </>
   );
 }
 
 export function App(): React.ReactElement {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename="/app">
       <AppContent />
     </BrowserRouter>
   );

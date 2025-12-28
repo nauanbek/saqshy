@@ -31,6 +31,14 @@ function getRiskColor(score: number): string {
   return 'safe';
 }
 
+function getRiskLabel(score: number): string {
+  if (score >= 92) return 'Critical risk';
+  if (score >= 75) return 'High risk';
+  if (score >= 50) return 'Medium risk';
+  if (score >= 30) return 'Low risk';
+  return 'Safe';
+}
+
 function formatTimeAgo(dateString: string): string {
   const date = new Date(dateString);
   const now = new Date();
@@ -50,17 +58,12 @@ function truncateMessage(message: string, maxLength: number = 150): string {
   return message.substring(0, maxLength) + '...';
 }
 
-function ReviewItem({
-  review,
-  onApprove,
-  onConfirmBlock,
-}: ReviewItemProps): React.ReactElement {
+function ReviewItem({ review, onApprove, onConfirmBlock }: ReviewItemProps): React.ReactElement {
   const { hapticFeedback, showConfirm } = useTelegram();
-  const [actionLoading, setActionLoading] = useState<'approve' | 'block' | null>(
-    null
-  );
+  const [actionLoading, setActionLoading] = useState<'approve' | 'block' | null>(null);
 
   const handleApprove = async () => {
+    hapticFeedback.impact('light');
     const confirmed = await showConfirm(
       'Approve this message? The user will be allowed to continue posting.'
     );
@@ -78,6 +81,7 @@ function ReviewItem({
   };
 
   const handleConfirmBlock = async () => {
+    hapticFeedback.impact('medium');
     const confirmed = await showConfirm(
       'Confirm block? The user will be permanently banned from the group.'
     );
@@ -96,17 +100,30 @@ function ReviewItem({
 
   const riskColor = getRiskColor(review.risk_score);
 
+  const userName = review.username ? `@${review.username}` : `User ${review.user_id}`;
+
   return (
-    <div className="review-item">
+    <article className="review-item" aria-labelledby={`review-${review.id}-user`}>
       <div className="review-header">
         <div className="review-user">
-          <span className="review-username">
-            {review.username ? `@${review.username}` : `User ${review.user_id}`}
+          <span className="review-username" id={`review-${review.id}-user`}>
+            {userName}
           </span>
-          <span className="review-time">{formatTimeAgo(review.created_at)}</span>
+          <span
+            className="review-time"
+            aria-label={`Submitted ${formatTimeAgo(review.created_at)}`}
+          >
+            {formatTimeAgo(review.created_at)}
+          </span>
         </div>
-        <div className={`risk-badge risk-${riskColor}`}>
-          <span className="risk-score">{review.risk_score}</span>
+        <div
+          className={`risk-badge risk-${riskColor}`}
+          role="img"
+          aria-label={`${getRiskLabel(review.risk_score)}, score ${review.risk_score}`}
+        >
+          <span className="risk-score" aria-hidden="true">
+            {review.risk_score}
+          </span>
         </div>
       </div>
 
@@ -115,40 +132,36 @@ function ReviewItem({
       </div>
 
       {review.threat_types.length > 0 && (
-        <div className="review-threats">
+        <div className="review-threats" role="list" aria-label="Detected threat types">
           {review.threat_types.map((threat) => (
-            <span key={threat} className="threat-tag">
+            <span key={threat} className="threat-tag" role="listitem">
               {threat}
             </span>
           ))}
         </div>
       )}
 
-      <div className="review-actions">
+      <div className="review-actions" role="group" aria-label={`Actions for ${userName}`}>
         <button
           className="btn btn-success"
           onClick={handleApprove}
           disabled={actionLoading !== null}
+          aria-label={`Approve message from ${userName}`}
+          aria-busy={actionLoading === 'approve'}
         >
-          {actionLoading === 'approve' ? (
-            <LoadingSpinner size="small" />
-          ) : (
-            'Approve'
-          )}
+          {actionLoading === 'approve' ? <LoadingSpinner size="small" /> : 'Approve'}
         </button>
         <button
           className="btn btn-danger"
           onClick={handleConfirmBlock}
           disabled={actionLoading !== null}
+          aria-label={`Block user ${userName}`}
+          aria-busy={actionLoading === 'block'}
         >
-          {actionLoading === 'block' ? (
-            <LoadingSpinner size="small" />
-          ) : (
-            'Confirm Block'
-          )}
+          {actionLoading === 'block' ? <LoadingSpinner size="small" /> : 'Confirm Block'}
         </button>
       </div>
-    </div>
+    </article>
   );
 }
 
@@ -164,8 +177,13 @@ function ReviewRow({
   index,
   style,
   data,
-}: ListChildComponentProps<RowData>): React.ReactElement {
+}: ListChildComponentProps<RowData>): React.ReactElement | null {
   const review = data.reviews[index];
+
+  // Safety check for noUncheckedIndexedAccess
+  if (!review) {
+    return null;
+  }
 
   return (
     <div style={style}>
@@ -208,10 +226,7 @@ export function ReviewQueue({
   }, []);
 
   // Memoize handlers to prevent unnecessary re-renders
-  const handleApprove = useCallback(
-    (reviewId: string) => onApprove(reviewId),
-    [onApprove]
-  );
+  const handleApprove = useCallback((reviewId: string) => onApprove(reviewId), [onApprove]);
 
   const handleConfirmBlock = useCallback(
     (reviewId: string) => onConfirmBlock(reviewId),
@@ -228,8 +243,10 @@ export function ReviewQueue({
 
   if (reviews.length === 0) {
     return (
-      <div className="review-queue-empty">
-        <div className="empty-icon">[ok]</div>
+      <div className="review-queue-empty" role="status" aria-live="polite">
+        <div className="empty-icon" aria-hidden="true">
+          [ok]
+        </div>
         <h3>No pending reviews</h3>
         <p>All caught up! No messages need your attention right now.</p>
       </div>
@@ -244,10 +261,12 @@ export function ReviewQueue({
   };
 
   return (
-    <div className="review-queue" ref={containerRef}>
+    <div className="review-queue" ref={containerRef} role="region" aria-label="Review queue">
       <div className="review-queue-header">
-        <h3>Pending Reviews</h3>
-        <span className="review-count">{reviews.length} items</span>
+        <h3 id="review-queue-title">Pending Reviews</h3>
+        <span className="review-count" aria-live="polite">
+          {reviews.length} items
+        </span>
       </div>
 
       <List

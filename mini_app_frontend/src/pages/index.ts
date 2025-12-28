@@ -1,3 +1,4 @@
-export { GroupSettingsPage } from './GroupSettingsPage';
-export { GroupStatsPage } from './GroupStatsPage';
-export { ReviewQueuePage } from './ReviewQueuePage';
+// Named exports for direct imports (backwards compatibility)
+export { default as GroupSettingsPage } from './GroupSettingsPage';
+export { default as GroupStatsPage } from './GroupStatsPage';
+export { default as ReviewQueuePage } from './ReviewQueuePage';

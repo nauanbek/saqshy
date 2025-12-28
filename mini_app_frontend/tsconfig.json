@@ -13,16 +13,36 @@
     "noEmit": true,
     "jsx": "react-jsx",
 
+    /* Strict Type-Checking Options */
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "forceConsistentCasingInFileNames": true,
 
+    /* Path aliases */
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@/components/*": ["src/components/*"],
+      "@/hooks/*": ["src/hooks/*"],
+      "@/stores/*": ["src/stores/*"],
+      "@/api/*": ["src/api/*"]
     }
   },
   "include": ["src"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "e2e",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx",
+    "src/test/**"
+  ],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

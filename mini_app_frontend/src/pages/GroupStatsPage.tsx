@@ -1,9 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { StatsCard, LoadingSpinner } from '../components';
-import { getGroupStats } from '../api/client';
+import { StatsCard } from '../components';
+import { StatsSkeleton } from '../components/skeletons';
+import { ErrorFallback } from '../components/ErrorBoundary';
+import { useGroupStats } from '../hooks/queries';
+import { useBackButton } from '../hooks/useBackButton';
 import { useTelegram } from '../hooks/useTelegram';
-import type { GroupStats } from '../types';
 
 interface GroupStatsPageProps {
   groupId: number;
@@ -15,79 +17,62 @@ const PERIOD_OPTIONS = [
   { value: 30, label: '30 days' },
 ];
 
-export function GroupStatsPage({
-  groupId,
-}: GroupStatsPageProps): React.ReactElement {
+function GroupStatsPage({ groupId }: GroupStatsPageProps): React.ReactElement {
   const navigate = useNavigate();
-  const { backButton, hapticFeedback } = useTelegram();
-
-  const [stats, setStats] = useState<GroupStats | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { hapticFeedback } = useTelegram();
   const [periodDays, setPeriodDays] = useState(7);
 
-  // Load stats
-  useEffect(() => {
-    async function loadStats() {
-      setIsLoading(true);
-      setError(null);
+  // Setup back button to go to settings
+  useBackButton({ navigateTo: '/' });
 
-      try {
-        const data = await getGroupStats(groupId, periodDays);
-        setStats(data);
-      } catch (err) {
-        const message =
-          err instanceof Error ? err.message : 'Failed to load statistics';
-        setError(message);
-      } finally {
-        setIsLoading(false);
-      }
-    }
-
-    loadStats();
-  }, [groupId, periodDays]);
-
-  // Setup back button
-  useEffect(() => {
-    backButton.show(() => {
-      navigate('/app');
-    });
-
-    return () => {
-      backButton.hide();
-    };
-  }, [backButton, navigate]);
+  // Fetch stats with React Query
+  const { data: stats, isLoading, error, refetch } = useGroupStats(groupId, periodDays);
 
   const handlePeriodChange = (days: number) => {
     hapticFeedback.selection();
     setPeriodDays(days);
   };
 
+  // Loading state with skeleton
   if (isLoading) {
     return (
-      <div className="page page-loading">
-        <LoadingSpinner size="large" text="Loading statistics..." />
+      <div className="page page-stats">
+        <header className="page-header">
+          <h1>Statistics</h1>
+          <div className="period-selector">
+            {PERIOD_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                className={`period-btn ${periodDays === option.value ? 'active' : ''}`}
+                onClick={() => handlePeriodChange(option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </header>
+        <main className="page-content">
+          <StatsSkeleton />
+        </main>
       </div>
     );
   }
 
+  // Error state
   if (error) {
     return (
-      <div className="page page-error">
-        <div className="error-card">
-          <h2>Error</h2>
-          <p>{error}</p>
-          <button
-            className="btn btn-primary"
-            onClick={() => window.location.reload()}
-          >
-            Try Again
-          </button>
-        </div>
+      <div className="page page-stats">
+        <header className="page-header">
+          <h1>Statistics</h1>
+        </header>
+        <main className="page-content">
+          <ErrorFallback error={error} onRetry={() => refetch()} />
+        </main>
       </div>
     );
   }
 
+  // No data state
   if (!stats) {
     return (
       <div className="page page-error">
@@ -107,9 +92,7 @@ export function GroupStatsPage({
           {PERIOD_OPTIONS.map((option) => (
             <button
               key={option.value}
-              className={`period-btn ${
-                periodDays === option.value ? 'active' : ''
-              }`}
+              className={`period-btn ${periodDays === option.value ? 'active' : ''}`}
               onClick={() => handlePeriodChange(option.value)}
             >
               {option.label}
@@ -124,13 +107,19 @@ export function GroupStatsPage({
         <div className="stats-actions">
           <button
             className="btn btn-secondary"
-            onClick={() => navigate('/app')}
+            onClick={() => {
+              hapticFeedback.impact('light');
+              navigate('/');
+            }}
           >
             Back to Settings
           </button>
           <button
             className="btn btn-primary"
-            onClick={() => navigate('/app/review')}
+            onClick={() => {
+              hapticFeedback.impact('light');
+              navigate('/review');
+            }}
           >
             Review Queue
           </button>
@@ -139,3 +128,5 @@ export function GroupStatsPage({
     </div>
   );
 }
+
+export default GroupStatsPage;

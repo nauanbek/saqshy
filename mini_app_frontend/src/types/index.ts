@@ -45,6 +45,9 @@ export interface TelegramWebApp {
   close: () => void;
   showConfirm: (message: string, callback: (confirmed: boolean) => void) => void;
   showAlert: (message: string, callback?: () => void) => void;
+  // Event methods
+  onEvent: (eventType: string, callback: (event: { isStateStable: boolean }) => void) => void;
+  offEvent: (eventType: string, callback: (event: { isStateStable: boolean }) => void) => void;
   MainButton: {
     text: string;
     color: string;

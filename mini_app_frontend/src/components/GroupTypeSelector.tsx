@@ -64,9 +64,7 @@ export function GroupTypeSelector({
   return (
     <div className="group-type-selector">
       <h3 className="section-title">Group Type</h3>
-      <p className="section-hint">
-        Determines moderation thresholds and allowed content
-      </p>
+      <p className="section-hint">Determines moderation thresholds and allowed content</p>
 
       <div className="type-options">
         {GROUP_TYPES.map((type) => (

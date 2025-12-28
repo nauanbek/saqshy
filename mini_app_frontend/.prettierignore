@@ -1,0 +1,6 @@
+dist
+node_modules
+coverage
+.husky
+*.min.js
+*.min.css

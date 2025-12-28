@@ -1,110 +1,106 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ReviewQueue, LoadingSpinner } from '../components';
-import { getPendingReviews, submitReviewAction } from '../api/client';
+import { ReviewQueue, LoadingSpinner, PullToRefresh } from '../components';
+import { ReviewQueueSkeleton } from '../components/skeletons';
+import { ErrorFallback } from '../components/ErrorBoundary';
+import { useToast } from '../hooks/useToast';
+import { useReviews } from '../hooks/queries';
+import { useReviewAction } from '../hooks/mutations';
+import { useBackButton } from '../hooks/useBackButton';
 import { useTelegram } from '../hooks/useTelegram';
-import type { PendingReview } from '../types';
 
 interface ReviewQueuePageProps {
   groupId: number;
 }
 
-export function ReviewQueuePage({
-  groupId,
-}: ReviewQueuePageProps): React.ReactElement {
+function ReviewQueuePage({ groupId }: ReviewQueuePageProps): React.ReactElement {
   const navigate = useNavigate();
-  const { backButton, showAlert } = useTelegram();
+  const { hapticFeedback } = useTelegram();
+  const toast = useToast();
 
-  const [reviews, setReviews] = useState<PendingReview[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
+  // Setup back button to go to settings
+  useBackButton({ navigateTo: '/' });
 
-  // Load reviews
-  const loadReviews = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
+  // Fetch reviews with React Query (auto-refetch every 30s)
+  const {
+    data: reviews = [],
+    isLoading,
+    isFetching,
+    error,
+    refetch,
+    dataUpdatedAt,
+  } = useReviews(groupId);
 
-    try {
-      const data = await getPendingReviews(groupId);
-      setReviews(data);
-      setLastRefresh(new Date());
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to load reviews';
-      setError(message);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [groupId]);
+  // Review action mutation
+  const actionMutation = useReviewAction();
 
-  useEffect(() => {
-    loadReviews();
-  }, [loadReviews]);
-
-  // Setup back button
-  useEffect(() => {
-    backButton.show(() => {
-      navigate('/app');
-    });
-
-    return () => {
-      backButton.hide();
-    };
-  }, [backButton, navigate]);
+  // Format last update time
+  const lastRefresh = dataUpdatedAt ? new Date(dataUpdatedAt) : new Date();
 
   // Handle approve
   const handleApprove = useCallback(
     async (reviewId: string) => {
       try {
-        await submitReviewAction(groupId, {
-          review_id: reviewId,
-          action: 'approve',
+        await actionMutation.mutateAsync({
+          groupId,
+          action: { review_id: reviewId, action: 'approve' },
         });
-
-        // Remove from local state
-        setReviews((prev) => prev.filter((r) => r.id !== reviewId));
+        hapticFeedback.notification('success');
+        toast.success('Message approved');
       } catch (err) {
-        const message =
-          err instanceof Error ? err.message : 'Failed to approve message';
-        await showAlert(`Error: ${message}`);
+        hapticFeedback.notification('error');
+        const message = err instanceof Error ? err.message : 'Failed to approve';
+        toast.error(message);
         throw err;
       }
     },
-    [groupId, showAlert]
+    [groupId, actionMutation, hapticFeedback, toast]
   );
 
   // Handle confirm block
   const handleConfirmBlock = useCallback(
     async (reviewId: string) => {
       try {
-        await submitReviewAction(groupId, {
-          review_id: reviewId,
-          action: 'confirm_block',
+        await actionMutation.mutateAsync({
+          groupId,
+          action: { review_id: reviewId, action: 'confirm_block' },
         });
-
-        // Remove from local state
-        setReviews((prev) => prev.filter((r) => r.id !== reviewId));
+        hapticFeedback.notification('success');
+        toast.success('Block confirmed');
       } catch (err) {
-        const message =
-          err instanceof Error ? err.message : 'Failed to confirm block';
-        await showAlert(`Error: ${message}`);
+        hapticFeedback.notification('error');
+        const message = err instanceof Error ? err.message : 'Failed to confirm block';
+        toast.error(message);
         throw err;
       }
     },
-    [groupId, showAlert]
+    [groupId, actionMutation, hapticFeedback, toast]
   );
 
+  // Initial loading state with skeleton
+  if (isLoading) {
+    return (
+      <div className="page page-review">
+        <header className="page-header">
+          <h1>Review Queue</h1>
+        </header>
+        <main className="page-content">
+          <ReviewQueueSkeleton />
+        </main>
+      </div>
+    );
+  }
+
+  // Error state
   if (error) {
     return (
-      <div className="page page-error">
-        <div className="error-card">
-          <h2>Error</h2>
-          <p>{error}</p>
-          <button className="btn btn-primary" onClick={loadReviews}>
-            Try Again
-          </button>
-        </div>
+      <div className="page page-review">
+        <header className="page-header">
+          <h1>Review Queue</h1>
+        </header>
+        <main className="page-content">
+          <ErrorFallback error={error} onRetry={() => refetch()} />
+        </main>
       </div>
     );
   }
@@ -114,32 +110,44 @@ export function ReviewQueuePage({
       <header className="page-header">
         <h1>Review Queue</h1>
         <div className="header-actions">
-          <span className="last-refresh">
-            Updated {lastRefresh.toLocaleTimeString()}
-          </span>
+          <span className="last-refresh">Updated {lastRefresh.toLocaleTimeString()}</span>
           <button
             className="btn btn-icon"
-            onClick={loadReviews}
-            disabled={isLoading}
+            onClick={() => {
+              hapticFeedback.impact('light');
+              refetch();
+            }}
+            disabled={isFetching}
             title="Refresh"
+            aria-label="Refresh reviews"
           >
-            {isLoading ? <LoadingSpinner size="small" /> : '[refresh]'}
+            {isFetching ? <LoadingSpinner size="small" /> : '↻'}
           </button>
         </div>
       </header>
 
       <main className="page-content">
-        <ReviewQueue
-          reviews={reviews}
-          onApprove={handleApprove}
-          onConfirmBlock={handleConfirmBlock}
-          isLoading={isLoading}
-        />
+        <PullToRefresh
+          onRefresh={async () => {
+            await refetch();
+          }}
+          disabled={isFetching}
+        >
+          <ReviewQueue
+            reviews={reviews}
+            onApprove={handleApprove}
+            onConfirmBlock={handleConfirmBlock}
+            isLoading={isFetching && reviews.length === 0}
+          />
+        </PullToRefresh>
 
         <div className="review-actions">
           <button
             className="btn btn-secondary"
-            onClick={() => navigate('/app')}
+            onClick={() => {
+              hapticFeedback.impact('light');
+              navigate('/');
+            }}
           >
             Back to Settings
           </button>
@@ -148,3 +156,5 @@ export function ReviewQueuePage({
     </div>
   );
 }
+
+export default ReviewQueuePage;

@@ -394,6 +394,33 @@ class CacheService:
         result = await self._execute("set", key, value, ex=ttl, default=False)
         return result is not False
 
+    async def set_nx(
+        self,
+        key: str,
+        value: str,
+        ttl: int | None = None,
+    ) -> bool:
+        """
+        Set a value in cache only if the key does not exist (atomic).
+
+        This is an atomic operation that prevents race conditions.
+        Equivalent to Redis SET key value NX EX ttl.
+
+        Args:
+            key: Cache key.
+            value: Value to cache.
+            ttl: Time-to-live in seconds.
+
+        Returns:
+            True if the key was set (did not exist before).
+            False if the key already exists.
+        """
+        ttl = ttl or self.default_ttl
+        # SET with NX (only set if not exists) and EX (expiry)
+        result = await self._execute("set", key, value, ex=ttl, nx=True, default=None)
+        # Redis returns True/OK if key was set, None if key already exists
+        return result is True or result == "OK"
+
     async def delete(self, key: str) -> bool:
         """
         Delete a value from cache.

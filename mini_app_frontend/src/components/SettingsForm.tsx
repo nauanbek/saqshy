@@ -27,6 +27,10 @@ export function SettingsForm({
   const [sandboxEnabled, setSandboxEnabled] = useState(settings.sandbox_enabled);
   const [sandboxDuration, setSandboxDuration] = useState(settings.sandbox_duration_hours);
   const [adminNotifications, setAdminNotifications] = useState(settings.admin_notifications);
+  const [sensitivity, setSensitivity] = useState(settings.sensitivity ?? 5);
+  const [adminAlertChatId, setAdminAlertChatId] = useState<string>(
+    settings.admin_alert_chat_id?.toString() || ''
+  );
 
   // Channel validation state
   const [channelValidating, setChannelValidating] = useState(false);
@@ -38,15 +42,18 @@ export function SettingsForm({
 
   // Check for changes
   useEffect(() => {
+    const parsedAlertChatId = adminAlertChatId.trim() ? parseInt(adminAlertChatId, 10) : null;
     const changed =
       groupType !== settings.group_type ||
       linkedChannelId !== settings.linked_channel_id ||
       sandboxEnabled !== settings.sandbox_enabled ||
       sandboxDuration !== settings.sandbox_duration_hours ||
-      adminNotifications !== settings.admin_notifications;
+      adminNotifications !== settings.admin_notifications ||
+      sensitivity !== (settings.sensitivity ?? 5) ||
+      parsedAlertChatId !== settings.admin_alert_chat_id;
 
     setHasChanges(changed);
-  }, [groupType, linkedChannelId, sandboxEnabled, sandboxDuration, adminNotifications, settings]);
+  }, [groupType, linkedChannelId, sandboxEnabled, sandboxDuration, adminNotifications, sensitivity, adminAlertChatId, settings]);
 
   // Validate channel
   const handleValidateChannel = useCallback(async () => {
@@ -98,6 +105,8 @@ export function SettingsForm({
 
     if (!hasChanges) return;
 
+    const parsedAlertChatId = adminAlertChatId.trim() ? parseInt(adminAlertChatId, 10) : null;
+
     try {
       await onSave({
         group_type: groupType,
@@ -105,6 +114,8 @@ export function SettingsForm({
         sandbox_enabled: sandboxEnabled,
         sandbox_duration_hours: sandboxDuration,
         admin_notifications: adminNotifications,
+        sensitivity,
+        admin_alert_chat_id: parsedAlertChatId,
       });
       hapticFeedback.notification('success');
       await showAlert('Settings saved successfully!');
@@ -243,6 +254,64 @@ export function SettingsForm({
         )}
       </div>
 
+      {/* Detection Sensitivity */}
+      <div className="settings-section" role="group" aria-labelledby="sensitivity-section-title">
+        <h3 className="section-title" id="sensitivity-section-title">
+          Detection Sensitivity
+        </h3>
+        <p className="section-hint" id="sensitivity-section-hint">
+          Higher values mean more aggressive spam detection (may increase false positives)
+        </p>
+
+        <div className="slider-group">
+          <label className="slider-label" id="sensitivity-label" htmlFor="sensitivity">
+            Sensitivity: <strong>{sensitivity}</strong>
+          </label>
+          <input
+            id="sensitivity"
+            type="range"
+            className="slider"
+            min={1}
+            max={10}
+            step={1}
+            value={sensitivity}
+            onChange={(e) => {
+              hapticFeedback.selection();
+              setSensitivity(parseInt(e.target.value, 10));
+            }}
+            disabled={isSaving}
+            aria-valuemin={1}
+            aria-valuemax={10}
+            aria-valuenow={sensitivity}
+            aria-valuetext={`${sensitivity} out of 10`}
+            aria-describedby="sensitivity-section-hint"
+          />
+          <div className="slider-labels" aria-hidden="true">
+            <span>Lenient</span>
+            <span>Balanced</span>
+            <span>Strict</span>
+          </div>
+        </div>
+
+        <div className="sensitivity-indicator" aria-live="polite">
+          {sensitivity <= 3 && (
+            <p className="sensitivity-hint sensitivity-lenient">
+              More spam may get through, but fewer false positives
+            </p>
+          )}
+          {sensitivity >= 4 && sensitivity <= 6 && (
+            <p className="sensitivity-hint sensitivity-balanced">
+              Balanced detection for most groups
+            </p>
+          )}
+          {sensitivity >= 7 && (
+            <p className="sensitivity-hint sensitivity-strict">
+              Stricter detection - may flag legitimate messages
+            </p>
+          )}
+        </div>
+      </div>
+
       {/* Admin Notifications */}
       <div className="settings-section" role="group" aria-labelledby="notifications-section-title">
         <h3 className="section-title" id="notifications-section-title">
@@ -270,6 +339,36 @@ export function SettingsForm({
         <p className="toggle-hint" id="admin-notifications-hint">
           Receive notifications about blocked messages requiring review
         </p>
+
+        {adminNotifications && (
+          <div className="admin-alert-chat-group">
+            <label className="input-label" htmlFor="admin-alert-chat-id">
+              Admin Notification Chat ID
+              <span className="input-hint">Optional: Send alerts to a specific chat instead of the group</span>
+            </label>
+            <input
+              id="admin-alert-chat-id"
+              type="text"
+              className="input"
+              inputMode="numeric"
+              pattern="-?[0-9]*"
+              value={adminAlertChatId}
+              onChange={(e) => {
+                // Allow negative numbers and empty string
+                const value = e.target.value;
+                if (value === '' || value === '-' || /^-?\d+$/.test(value)) {
+                  setAdminAlertChatId(value);
+                }
+              }}
+              placeholder="e.g., -1001234567890"
+              disabled={isSaving}
+              aria-describedby="admin-alert-chat-hint"
+            />
+            <p className="input-hint-below" id="admin-alert-chat-hint">
+              Leave empty to receive alerts in the group itself
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Save Button */}

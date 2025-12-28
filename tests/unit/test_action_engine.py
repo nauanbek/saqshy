@@ -57,10 +57,11 @@ def mock_bot():
 
 @pytest.fixture
 def mock_cache():
-    """Create a mock cache service."""
+    """Create a mock cache service with set_nx support."""
     cache = AsyncMock()
     cache.exists = AsyncMock(return_value=False)
     cache.set = AsyncMock(return_value=True)
+    cache.set_nx = AsyncMock(return_value=True)  # For atomic rate limiting
     cache.set_json = AsyncMock(return_value=True)
     cache.get = AsyncMock(return_value=None)
     return cache
@@ -579,9 +580,9 @@ class TestNotifyAdmins:
     async def test_notify_admins_rate_limited(
         self, action_engine, mock_cache, block_result, mock_message
     ):
-        """Test admin notification rate limiting."""
-        # Simulate rate limit hit
-        mock_cache.exists.return_value = True
+        """Test admin notification rate limiting using atomic set_nx."""
+        # Simulate rate limit hit - set_nx returns False when lock already exists
+        mock_cache.set_nx.return_value = False
 
         result = await action_engine.notify_admins(
             chat_id=-1001234567890,

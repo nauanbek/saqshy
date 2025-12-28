@@ -462,25 +462,6 @@ class MetricsMiddleware(BaseMiddleware):
 
 
 # =============================================================================
-# Backward Compatibility
-# =============================================================================
-
-
-def configure_structlog() -> None:
-    """
-    Configure structlog for JSON logging.
-
-    DEPRECATED: Use saqshy.core.logging.configure_logging instead.
-
-    This function is kept for backward compatibility but simply
-    delegates to the core logging module.
-    """
-    from saqshy.core.logging import configure_logging
-
-    configure_logging()
-
-
-# =============================================================================
 # Middleware Chain Helper
 # =============================================================================
 

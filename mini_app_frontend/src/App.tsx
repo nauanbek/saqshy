@@ -37,8 +37,9 @@ function AppContent(): React.ReactElement {
 
     // Try to parse from start_param
     if (startParam) {
-      // Handle formats: group_-123456789, group-123456789, or -123456789
-      const match = startParam.match(/^group_?(-?\d+)$/);
+      // Handle formats: group_-123456789, group-123456789, -123456789
+      // Also handles optional _admin suffix: group_-123456789_admin
+      const match = startParam.match(/^group_?(-?\d+)(?:_admin)?$/);
       if (match && match[1]) {
         id = parseInt(match[1], 10);
       } else if (/^-?\d+$/.test(startParam)) {

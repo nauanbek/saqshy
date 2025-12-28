@@ -20,10 +20,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import structlog
 from aiogram import Bot
@@ -31,12 +32,16 @@ from aiogram.exceptions import (
     TelegramAPIError,
     TelegramBadRequest,
     TelegramForbiddenError,
+    TelegramNetworkError,
     TelegramNotFound,
     TelegramRetryAfter,
 )
 from aiogram.types import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from saqshy.core.types import GroupType, RiskResult, ThreatType, Verdict
+
+# TypeVar for generic retry function return type
+T = TypeVar("T")
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -62,6 +67,13 @@ ADMIN_NOTIFY_RATE_LIMIT = 300
 
 # Maximum message preview length in admin notifications
 MAX_MESSAGE_PREVIEW = 100
+
+# Retry configuration for Telegram API calls
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_RETRY_BASE_DELAY = 1.0  # seconds
+
+# Non-retryable error types (permission/client errors that won't be fixed by retrying)
+NON_RETRYABLE_ERRORS = (TelegramForbiddenError, TelegramBadRequest, TelegramNotFound)
 
 
 # =============================================================================
@@ -480,10 +492,11 @@ class ActionEngine:
         message_id: int,
     ) -> ActionResult:
         """
-        Delete a spam message.
+        Delete a spam message with automatic retry on transient errors.
 
         Handles all Telegram API errors gracefully and returns
         success=True if the message is gone (including if already deleted).
+        Retries on network errors and rate limits with exponential backoff.
 
         Args:
             chat_id: Telegram chat ID.
@@ -493,9 +506,12 @@ class ActionEngine:
             ActionResult indicating success/failure.
         """
         try:
-            await asyncio.wait_for(
-                self.bot.delete_message(chat_id=chat_id, message_id=message_id),
-                timeout=TELEGRAM_API_TIMEOUT,
+            await self._telegram_api_with_retry(
+                operation=lambda: asyncio.wait_for(
+                    self.bot.delete_message(chat_id=chat_id, message_id=message_id),
+                    timeout=TELEGRAM_API_TIMEOUT,
+                ),
+                operation_name="delete_message",
             )
             return ActionResult(
                 action="delete",
@@ -512,7 +528,7 @@ class ActionEngine:
             return ActionResult(
                 action="delete",
                 success=False,
-                error="Telegram API timeout",
+                error="Telegram API timeout after retries",
             )
 
         except TelegramRetryAfter as e:
@@ -599,7 +615,9 @@ class ActionEngine:
         preset: str | None = None,
     ) -> ActionResult:
         """
-        Restrict user permissions temporarily.
+        Restrict user permissions temporarily with automatic retry.
+
+        Retries on network errors and rate limits with exponential backoff.
 
         Args:
             chat_id: Telegram chat ID.
@@ -620,14 +638,17 @@ class ActionEngine:
         until_date = int(datetime.now(UTC).timestamp() + duration)
 
         try:
-            await asyncio.wait_for(
-                self.bot.restrict_chat_member(
-                    chat_id=chat_id,
-                    user_id=user_id,
-                    permissions=permissions,
-                    until_date=until_date,
+            await self._telegram_api_with_retry(
+                operation=lambda: asyncio.wait_for(
+                    self.bot.restrict_chat_member(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        permissions=permissions,
+                        until_date=until_date,
+                    ),
+                    timeout=TELEGRAM_API_TIMEOUT,
                 ),
-                timeout=TELEGRAM_API_TIMEOUT,
+                operation_name="restrict_user",
             )
             return ActionResult(
                 action="restrict",
@@ -649,7 +670,7 @@ class ActionEngine:
             return ActionResult(
                 action="restrict",
                 success=False,
-                error="Telegram API timeout",
+                error="Telegram API timeout after retries",
             )
 
         except TelegramRetryAfter as e:
@@ -737,7 +758,9 @@ class ActionEngine:
         revoke_messages: bool = False,
     ) -> ActionResult:
         """
-        Ban a user from the group.
+        Ban a user from the group with automatic retry on transient errors.
+
+        Retries on network errors and rate limits with exponential backoff.
 
         Args:
             chat_id: Telegram chat ID.
@@ -754,14 +777,17 @@ class ActionEngine:
             until_date = int(datetime.now(UTC).timestamp() + duration)
 
         try:
-            await asyncio.wait_for(
-                self.bot.ban_chat_member(
-                    chat_id=chat_id,
-                    user_id=user_id,
-                    until_date=until_date,
-                    revoke_messages=revoke_messages,
+            await self._telegram_api_with_retry(
+                operation=lambda: asyncio.wait_for(
+                    self.bot.ban_chat_member(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        until_date=until_date,
+                        revoke_messages=revoke_messages,
+                    ),
+                    timeout=TELEGRAM_API_TIMEOUT,
                 ),
-                timeout=TELEGRAM_API_TIMEOUT,
+                operation_name="ban_user",
             )
             return ActionResult(
                 action="ban",
@@ -784,7 +810,7 @@ class ActionEngine:
             return ActionResult(
                 action="ban",
                 success=False,
-                error="Telegram API timeout",
+                error="Telegram API timeout after retries",
             )
 
         except TelegramRetryAfter as e:
@@ -873,7 +899,8 @@ class ActionEngine:
         """
         Send alert to group admins with inline action buttons.
 
-        Rate-limited to prevent notification spam.
+        Rate-limited to prevent notification spam. Uses atomic lock acquisition
+        to prevent race conditions where multiple requests could bypass rate limiting.
 
         Args:
             chat_id: Telegram chat ID.
@@ -883,8 +910,8 @@ class ActionEngine:
         Returns:
             ActionResult indicating success/failure.
         """
-        # Check rate limit
-        if not await self._check_admin_notify_allowed(chat_id):
+        # Atomically acquire rate limit lock - prevents TOCTOU race condition
+        if not await self._acquire_admin_notify_lock(chat_id):
             logger.debug(
                 "admin_notify_rate_limited",
                 chat_id=chat_id,
@@ -987,8 +1014,8 @@ class ActionEngine:
                 except TelegramAPIError:
                     continue
 
-            # Mark notification as sent for rate limiting
-            await self._mark_admin_notify_sent(chat_id)
+            # Note: Rate limit lock was already acquired atomically at the start
+            # No need to mark as sent - the lock acquisition handles this
 
             return ActionResult(
                 action="notify_admins",
@@ -1222,6 +1249,96 @@ class ActionEngine:
         return 86400 * 7  # 7 days
 
     # =========================================================================
+    # Retry Logic
+    # =========================================================================
+
+    async def _telegram_api_with_retry(
+        self,
+        operation: Callable[[], Awaitable[T]],
+        operation_name: str,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        base_delay: float = DEFAULT_RETRY_BASE_DELAY,
+    ) -> T:
+        """
+        Execute Telegram API call with exponential backoff retry.
+
+        Retries on transient errors (network errors, timeouts, rate limits)
+        but fails immediately on non-retryable errors (forbidden, bad request).
+
+        Args:
+            operation: Async callable to execute.
+            operation_name: Name for logging purposes.
+            max_retries: Maximum number of retry attempts.
+            base_delay: Base delay in seconds for exponential backoff.
+
+        Returns:
+            Result of the operation.
+
+        Raises:
+            The last error encountered after all retries are exhausted,
+            or immediately for non-retryable errors.
+        """
+        last_error: Exception | None = None
+
+        for attempt in range(max_retries):
+            try:
+                return await operation()
+
+            except NON_RETRYABLE_ERRORS as e:
+                # Don't retry permission/client errors - they won't change
+                logger.debug(
+                    "telegram_api_non_retryable_error",
+                    operation=operation_name,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+                raise
+
+            except TelegramRetryAfter as e:
+                # Respect Telegram's rate limit
+                if attempt < max_retries - 1:
+                    wait_time = e.retry_after
+                    logger.warning(
+                        "telegram_api_rate_limited",
+                        operation=operation_name,
+                        attempt=attempt + 1,
+                        retry_after=wait_time,
+                    )
+                    await asyncio.sleep(wait_time)
+                    last_error = e
+                else:
+                    raise
+
+            except (TelegramNetworkError, TelegramAPIError, TimeoutError) as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2**attempt)
+                    logger.warning(
+                        "telegram_api_retry",
+                        operation=operation_name,
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        delay=delay,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        "telegram_api_retries_exhausted",
+                        operation=operation_name,
+                        max_retries=max_retries,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    )
+                    raise
+
+        # Should not reach here, but if we do, raise the last error
+        if last_error:
+            raise last_error
+        raise RuntimeError(f"Unexpected state in retry loop for {operation_name}")
+
+    # =========================================================================
     # Idempotency
     # =========================================================================
 
@@ -1246,21 +1363,76 @@ class ActionEngine:
     # Rate Limiting
     # =========================================================================
 
-    async def _check_admin_notify_allowed(self, chat_id: int) -> bool:
-        """Check if admin notification is allowed (rate limiting)."""
+    async def _acquire_admin_notify_lock(self, chat_id: int) -> bool:
+        """
+        Atomically acquire admin notification lock.
+
+        Uses SET NX (set if not exists) with TTL to prevent race conditions.
+        This is an atomic check-and-set operation that prevents the TOCTOU
+        vulnerability in the previous check-then-mark approach.
+
+        Args:
+            chat_id: Telegram chat ID.
+
+        Returns:
+            True if lock was acquired (notification allowed).
+            False if lock already exists (rate limited).
+        """
+        if not self.cache:
+            # No cache means no rate limiting - allow notification
+            return True
+
+        lock_key = f"saqshy:admin_notify_lock:{chat_id}"
+
+        # Atomic SET NX with TTL - only succeeds if key doesn't exist
+        # This prevents race condition where multiple requests could
+        # pass the check before any marks the notification as sent
+        try:
+            acquired = await self.cache.set_nx(
+                lock_key,
+                "1",
+                ttl=self.config.admin_notify_rate_limit,
+            )
+            return acquired
+        except AttributeError:
+            # Fallback if cache doesn't support set_nx - use regular set
+            # This is less safe but maintains backward compatibility
+            logger.warning(
+                "cache_set_nx_not_available",
+                fallback="using_exists_then_set",
+            )
+            return await self._check_admin_notify_allowed_fallback(chat_id)
+
+    async def _check_admin_notify_allowed_fallback(self, chat_id: int) -> bool:
+        """
+        Fallback rate limit check for caches without atomic SET NX.
+
+        WARNING: TOCTOU Race Condition
+        This method has a small race window between exists() and set().
+        Multiple concurrent calls may both pass the exists() check before
+        either sets the key. This is acceptable for rate limiting admin
+        notifications where occasional duplicate sends are tolerable.
+
+        For production, prefer _acquire_admin_notify_lock() which uses
+        atomic SET NX.
+        """
         if not self.cache:
             return True
 
-        key = f"saqshy:admin_notify:{chat_id}"
-        return not await self.cache.exists(key)
+        key = f"saqshy:admin_notify_lock:{chat_id}"
+        exists = await self.cache.exists(key)
+        if exists:
+            return False
 
-    async def _mark_admin_notify_sent(self, chat_id: int) -> None:
-        """Mark that admin notification was sent for rate limiting."""
-        if not self.cache:
-            return
-
-        key = f"saqshy:admin_notify:{chat_id}"
+        # Mark as sent - there's a small TOCTOU race window here
+        # This is logged at debug level since the race is expected and tolerable
+        logger.debug(
+            "admin_notify_fallback_race_window",
+            chat_id=chat_id,
+            info="Using non-atomic fallback, small race window possible",
+        )
         await self.cache.set(key, "1", ttl=self.config.admin_notify_rate_limit)
+        return True
 
 
 # =============================================================================
@@ -1310,8 +1482,9 @@ async def execute_with_fallback(
             if restrict_result.success:
                 result.user_restricted = True
 
-        if not result.user_banned and not result.user_restricted and not result.admins_notified:
-            # Ultimate fallback: at least notify admins
+        if not result.message_deleted and not result.user_banned and not result.user_restricted and not result.admins_notified:
+            # Ultimate fallback: if we couldn't delete, ban, or restrict, at least notify admins
+            # This ensures admins are aware of BLOCK-level messages that we failed to handle
             chat_id = message.chat.id
             notify_result = await engine.notify_admins(
                 chat_id,

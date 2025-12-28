@@ -136,7 +136,6 @@ NETWORK_WEIGHTS: dict[str, int] = {
     "duplicate_in_2_groups": 20,  # Message in 2 other groups
     "duplicate_in_3_groups": 35,  # Message in 3 other groups
     "duplicate_in_5_plus_groups": 50,  # Message in 5+ other groups (coordinated attack)
-    "duplicate_across_groups": 35,  # Deprecated: kept for backwards compatibility
     "flagged_in_other_groups": 25,
     "blocked_in_other_groups": 40,
     "is_in_global_blocklist": 50,
@@ -370,3 +369,7 @@ RATE_LIMITS: dict[str, dict[str, int]] = {
 LLM_GRAY_ZONE: tuple[int, int] = (35, 85)  # Expanded from (60, 80) for better detection
 LLM_MAX_RETRIES: int = 2
 LLM_TIMEOUT_SECONDS: int = 10
+
+# Threshold for forcing LLM review on first messages from unestablished users
+# This catches sophisticated spam that evades rule-based detection early
+LLM_FIRST_MESSAGE_THRESHOLD: int = 25

@@ -480,7 +480,7 @@ class RiskCalculator:
         """Convert score to verdict based on group thresholds.
 
         Raises:
-            ValueError: If thresholds tuple has wrong length.
+            ValueError: If thresholds tuple has wrong length or thresholds are not ascending.
             KeyError: If group_type is not in THRESHOLDS.
         """
         if self.group_type not in THRESHOLDS:
@@ -496,6 +496,13 @@ class RiskCalculator:
             )
 
         watch, limit, review, block = thresholds
+
+        # Validate thresholds are in ascending order
+        if not (watch <= limit <= review <= block):
+            raise ValueError(
+                f"THRESHOLDS[{self.group_type}] must be in ascending order: "
+                f"watch({watch}) <= limit({limit}) <= review({review}) <= block({block})"
+            )
 
         if score >= block:
             return Verdict.BLOCK

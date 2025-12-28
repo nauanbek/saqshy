@@ -192,6 +192,8 @@ class GroupMemberRepository(BaseRepository[GroupMember]):
                 joined_at=now,
                 trust_level=TrustLevel.NEW,
                 trust_score=50,
+                message_count=0,
+                messages_in_sandbox=0,
             )
             self.session.add(member)
 

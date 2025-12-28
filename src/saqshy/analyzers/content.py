@@ -130,7 +130,7 @@ class ContentAnalyzer:
         r"\bT[A-Za-z1-9]{33}\b|"  # Tron (TRC20)
         r"\b[LM3][a-km-zA-HJ-NP-Z1-9]{26,33}\b|"  # Litecoin
         r"\bbnb1[a-z0-9]{38}\b|"  # Binance Chain
-        r"\b[45][0-9AB][1-9A-HJ-NP-Za-km-z]{93}\b",  # Monero
+        r"\b4[0-9AB][1-9A-HJ-NP-Za-km-z]{93}\b",  # Monero (standard addresses only, start with 4)
         re.IGNORECASE,
     )
 

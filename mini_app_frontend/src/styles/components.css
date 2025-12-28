@@ -925,3 +925,64 @@
 .pull-to-refresh-content {
   will-change: transform;
 }
+
+/* ===========================================
+   SENSITIVITY SLIDER
+   =========================================== */
+
+.sensitivity-indicator {
+  margin-top: var(--spacing-md);
+}
+
+.sensitivity-hint {
+  font-size: 0.875rem;
+  padding: var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  margin: 0;
+}
+
+.sensitivity-lenient {
+  background-color: color-mix(in srgb, var(--color-success) 15%, transparent);
+  color: var(--color-success);
+}
+
+.sensitivity-balanced {
+  background-color: color-mix(in srgb, var(--color-info) 15%, transparent);
+  color: var(--color-info);
+}
+
+.sensitivity-strict {
+  background-color: color-mix(in srgb, var(--color-warning) 15%, transparent);
+  color: var(--color-warning);
+}
+
+/* ===========================================
+   ADMIN ALERT CHAT INPUT
+   =========================================== */
+
+.admin-alert-chat-group {
+  margin-top: var(--spacing-md);
+  padding-top: var(--spacing-md);
+  border-top: 1px solid var(--tg-theme-hint-color);
+}
+
+.input-label {
+  display: block;
+  font-weight: 500;
+  margin-bottom: var(--spacing-sm);
+}
+
+.input-hint {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: normal;
+  color: var(--tg-theme-hint-color);
+  margin-top: var(--spacing-xs);
+}
+
+.input-hint-below {
+  font-size: 0.75rem;
+  color: var(--tg-theme-hint-color);
+  margin-top: var(--spacing-xs);
+  margin-bottom: 0;
+}

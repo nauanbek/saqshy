@@ -41,7 +41,6 @@ from saqshy.bot.bot import (
     verify_webhook_secret,
 )
 from saqshy.bot.handlers import router
-from saqshy.bot.middlewares import configure_structlog
 from saqshy.bot.pipeline import (
     ANALYZER_TIMEOUT,
     CHANNEL_SUB_TIMEOUT,
@@ -74,6 +73,4 @@ __all__ = [
     "CHANNEL_SUB_TIMEOUT",
     "LLM_TIMEOUT",
     "TOTAL_PIPELINE_TIMEOUT",
-    # Utilities
-    "configure_structlog",
 ]

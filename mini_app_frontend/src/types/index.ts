@@ -105,6 +105,8 @@ export interface GroupSettings {
   sandbox_enabled: boolean;
   sandbox_duration_hours: number;
   admin_notifications: boolean;
+  sensitivity: number; // 1-10 scale for detection sensitivity
+  admin_alert_chat_id: number | null; // Optional chat ID for admin alerts
   custom_whitelist: string[];
   custom_blacklist: string[];
   created_at: string;

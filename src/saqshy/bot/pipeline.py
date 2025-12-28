@@ -39,6 +39,7 @@ from saqshy.core.audit import AuditTrail
 from saqshy.core.logging import get_correlation_id, get_logger
 from saqshy.core.metrics import MetricsCollector
 from saqshy.core.risk_calculator import RiskCalculator
+from saqshy.core.constants import LLM_FIRST_MESSAGE_THRESHOLD
 from saqshy.core.types import (
     BehaviorSignals,
     ContentSignals,
@@ -676,41 +677,41 @@ class MessagePipeline:
         self._check_degradation_threshold(log)
 
         # Acquire semaphore for concurrent request limiting
+        # Try to acquire semaphore with minimal timeout for backpressure
+        # If we can't acquire within 10ms, apply graceful degradation
         try:
-            # Use non-blocking acquire with immediate timeout for backpressure
-            acquired = self.request_semaphore.locked()
-            if acquired and self._active_requests >= self._max_concurrent_requests:
-                # At capacity, increment rejection counter but still process
-                # (semaphore will handle actual limiting)
-                log.debug(
-                    "pipeline_at_capacity",
-                    active_requests=self._active_requests,
-                    max_concurrent=self._max_concurrent_requests,
-                )
-
-            async with self.request_semaphore:
-                return await self._process_with_tracking(
-                    context=context,
-                    linked_channel_id=linked_channel_id,
-                    admin_ids=admin_ids,
-                    metrics=metrics,
-                    log=log,
-                    correlation_id=correlation_id,
-                )
-
-        except Exception as e:
-            # Should not happen, but safety net
-            log.exception(
-                "pipeline_semaphore_error",
-                correlation_id=correlation_id,
-                error=str(e),
+            # Only timeout on semaphore acquisition, not processing
+            await asyncio.wait_for(
+                self.request_semaphore.acquire(),
+                timeout=0.01,  # 10ms timeout for semaphore acquisition only
+            )
+        except TimeoutError:
+            # At capacity - graceful degradation
+            log.warning(
+                "pipeline_at_capacity_degradation",
+                active_requests=self._active_requests,
+                max_concurrent=self._max_concurrent_requests,
             )
             return RiskResult(
                 score=0,
                 verdict=Verdict.ALLOW,
                 signals=Signals(),
-                contributing_factors=["Pipeline semaphore error - defaulting to allow"],
+                contributing_factors=["Backpressure - graceful degradation (semaphore timeout)"],
             )
+
+        # Semaphore acquired - process the request
+        try:
+            return await self._process_with_tracking(
+                context=context,
+                linked_channel_id=linked_channel_id,
+                admin_ids=admin_ids,
+                metrics=metrics,
+                log=log,
+                correlation_id=correlation_id,
+            )
+        finally:
+            # Always release the semaphore
+            self.request_semaphore.release()
 
     async def _process_with_tracking(
         self,
@@ -976,7 +977,7 @@ class MessagePipeline:
         if (
             signals.behavior.is_first_message
             and signals.behavior.previous_messages_approved < 3
-            and result.score >= 25
+            and result.score >= LLM_FIRST_MESSAGE_THRESHOLD
             and not result.needs_llm  # Don't double-set
             and self.llm_service is not None
         ):
@@ -984,6 +985,7 @@ class MessagePipeline:
             log.info(
                 "forcing_llm_for_first_message",
                 score=result.score,
+                threshold=LLM_FIRST_MESSAGE_THRESHOLD,
                 previous_approved=signals.behavior.previous_messages_approved,
             )
 

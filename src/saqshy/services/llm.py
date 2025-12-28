@@ -538,7 +538,9 @@ Provide your verdict as JSON only."""
             log.warning(
                 "prompt_injection_detected",
                 pattern_count=len(injection_patterns),
+                patterns_matched=injection_patterns[:5],  # Limit to first 5 patterns
                 text_preview=sanitize_for_logging(message_text, max_length=100),
+                security_note="Message sanitized before LLM processing, continuing with analysis",
             )
 
         # Build prompt

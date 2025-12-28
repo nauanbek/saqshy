@@ -148,7 +148,12 @@ class Group(TimestampMixin, Base):
 
     # Group type context
     group_type: Mapped[GroupType] = mapped_column(
-        Enum(GroupType, name="group_type_enum", create_constraint=True),
+        Enum(
+            GroupType,
+            name="group_type_enum",
+            create_constraint=True,
+            values_callable=lambda e: [m.value for m in e],
+        ),
         default=GroupType.GENERAL,
         server_default="general",
         nullable=False,
@@ -423,7 +428,12 @@ class GroupMember(Base):
 
     # Trust status
     trust_level: Mapped[TrustLevel] = mapped_column(
-        Enum(TrustLevel, name="trust_level_enum", create_constraint=True),
+        Enum(
+            TrustLevel,
+            name="trust_level_enum",
+            create_constraint=True,
+            values_callable=lambda e: [m.value for m in e],
+        ),
         default=TrustLevel.NEW,
         server_default="new",
         nullable=False,
@@ -574,7 +584,12 @@ class Decision(Base):
         doc="Calculated risk score (0-100)",
     )
     verdict: Mapped[Verdict] = mapped_column(
-        Enum(Verdict, name="verdict_enum", create_constraint=True),
+        Enum(
+            Verdict,
+            name="verdict_enum",
+            create_constraint=True,
+            values_callable=lambda e: [m.value for m in e],
+        ),
         nullable=False,
         doc="Final verdict",
     )

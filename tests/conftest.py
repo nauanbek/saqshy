@@ -2,6 +2,18 @@
 SAQSHY Test Configuration
 
 Pytest fixtures and configuration for all tests.
+
+This module provides:
+1. Core fixtures (MessageContext, Signals) defined locally
+2. Telegram mocks imported from fixtures/telegram_mocks.py
+3. Database fixtures imported from fixtures/database.py
+4. Service mocks imported from fixtures/services.py
+5. Scenario fixtures imported from fixtures/scenarios.py
+
+Usage in tests:
+    def test_something(mock_telegram_bot, test_db_session, mock_llm_service):
+        # All fixtures are available via pytest discovery
+        ...
 """
 
 import os
@@ -22,6 +34,89 @@ from saqshy.core.types import (
     ProfileSignals,
     Signals,
 )
+
+# =============================================================================
+# Import fixtures from fixture modules
+# =============================================================================
+
+# Telegram mocks (pytest fixtures are auto-discovered when imported)
+from tests.fixtures.telegram_mocks import (  # noqa: F401
+    create_mock_chat,
+    create_mock_message,
+    create_mock_user,
+    mock_bot_user,
+    mock_callback_update,
+    mock_channel,
+    mock_link_message,
+    mock_premium_user,
+    mock_private_chat,
+    mock_reply_message,
+    mock_spam_message,
+    mock_spam_user,
+    mock_telegram_bot,
+    mock_telegram_bot_with_admin,
+    mock_telegram_chat,
+    mock_telegram_message,
+    mock_telegram_update,
+    mock_telegram_user,
+)
+
+# Database fixtures
+from tests.fixtures.database import (  # noqa: F401
+    get_test_database_url,
+    get_test_qdrant_url,
+    get_test_redis_url,
+    test_database_url,
+    test_db_engine,
+    test_db_session,
+    test_db_session_committed,
+    test_db_with_sample_data,
+    test_qdrant_client,
+    test_qdrant_collection,
+    test_qdrant_url,
+    test_redis_client,
+    test_redis_pool,
+    test_redis_url,
+    test_session_factory,
+    wait_for_postgres,
+    wait_for_redis,
+)
+
+# Service mocks
+from tests.fixtures.services import (  # noqa: F401
+    MockLLMResult,
+    ServicePatcher,
+    SpamDBMatch,
+    create_llm_result,
+    mock_all_services,
+    mock_channel_subscription_service,
+    mock_channel_subscription_service_subscribed,
+    mock_embeddings_service_realistic,
+    mock_llm_result_allow,
+    mock_llm_result_block,
+    mock_llm_result_error,
+    mock_llm_result_watch,
+    mock_llm_service_unavailable,
+    mock_spam_db_with_matches,
+)
+
+# Mini App auth mocks
+from tests.fixtures.miniapp_auth import (  # noqa: F401
+    TEST_BOT_TOKEN,
+    MiniAppTestClient,
+    create_mock_webapp_auth,
+    create_mock_webapp_request,
+    expired_init_data,
+    generate_test_init_data,
+    mock_admin_webapp_auth,
+    mock_non_admin_webapp_auth,
+    mock_webapp_user,
+    valid_init_data,
+)
+
+# Note: Some fixtures defined below have the same names as imported ones.
+# The local definitions take precedence for backward compatibility.
+# New tests should prefer the more comprehensive fixtures from the modules.
 
 # =============================================================================
 # Message Context Fixtures
@@ -238,13 +333,13 @@ def db_url() -> str:
     )
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 async def db_engine(db_url: str) -> AsyncGenerator[AsyncEngine, None]:
     """
     Create async database engine for integration tests.
 
-    This fixture has session scope to reuse the engine across all tests.
-    The engine is disposed after all tests complete.
+    Creates a fresh engine per test function for proper async loop handling.
+    The engine is disposed after the test completes.
     """
     from saqshy.db import get_engine
 
@@ -267,7 +362,38 @@ async def db_session(db_engine: AsyncEngine) -> AsyncGenerator[AsyncSession, Non
     Note: This requires a test database to be available.
     Set TEST_DATABASE_URL or ensure postgres is running on localhost:5433.
     """
+    from sqlalchemy import text
+
     from saqshy.db import Base
+
+    # Create PostgreSQL extensions and enum types before creating tables
+    async with db_engine.begin() as conn:
+        # Create required extensions
+        await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
+        await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pg_trgm"'))
+
+        # Create enum types if they don't exist
+        await conn.execute(text("""
+            DO $$ BEGIN
+                CREATE TYPE group_type_enum AS ENUM ('general', 'tech', 'deals', 'crypto');
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$;
+        """))
+        await conn.execute(text("""
+            DO $$ BEGIN
+                CREATE TYPE trust_level_enum AS ENUM ('new', 'sandbox', 'limited', 'trusted', 'admin');
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$;
+        """))
+        await conn.execute(text("""
+            DO $$ BEGIN
+                CREATE TYPE verdict_enum AS ENUM ('allow', 'watch', 'limit', 'review', 'block');
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$;
+        """))
 
     # Create all tables before test
     async with db_engine.begin() as conn:
@@ -292,6 +418,12 @@ async def db_session(db_engine: AsyncEngine) -> AsyncGenerator[AsyncSession, Non
     async with db_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
 
+    # Drop enum types as well
+    async with db_engine.begin() as conn:
+        await conn.execute(text("DROP TYPE IF EXISTS group_type_enum CASCADE"))
+        await conn.execute(text("DROP TYPE IF EXISTS trust_level_enum CASCADE"))
+        await conn.execute(text("DROP TYPE IF EXISTS verdict_enum CASCADE"))
+
 
 @pytest.fixture
 async def db_session_committed(db_engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
@@ -306,7 +438,38 @@ async def db_session_committed(db_engine: AsyncEngine) -> AsyncGenerator[AsyncSe
     - Verify data is actually persisted
     - Test concurrent access patterns
     """
+    from sqlalchemy import text
+
     from saqshy.db import Base
+
+    # Create PostgreSQL extensions and enum types before creating tables
+    async with db_engine.begin() as conn:
+        # Create required extensions
+        await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
+        await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pg_trgm"'))
+
+        # Create enum types if they don't exist
+        await conn.execute(text("""
+            DO $$ BEGIN
+                CREATE TYPE group_type_enum AS ENUM ('general', 'tech', 'deals', 'crypto');
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$;
+        """))
+        await conn.execute(text("""
+            DO $$ BEGIN
+                CREATE TYPE trust_level_enum AS ENUM ('new', 'sandbox', 'limited', 'trusted', 'admin');
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$;
+        """))
+        await conn.execute(text("""
+            DO $$ BEGIN
+                CREATE TYPE verdict_enum AS ENUM ('allow', 'watch', 'limit', 'review', 'block');
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$;
+        """))
 
     # Create all tables before test
     async with db_engine.begin() as conn:
@@ -327,6 +490,12 @@ async def db_session_committed(db_engine: AsyncEngine) -> AsyncGenerator[AsyncSe
     # Drop all tables after test for isolation
     async with db_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+
+    # Drop enum types as well
+    async with db_engine.begin() as conn:
+        await conn.execute(text("DROP TYPE IF EXISTS group_type_enum CASCADE"))
+        await conn.execute(text("DROP TYPE IF EXISTS trust_level_enum CASCADE"))
+        await conn.execute(text("DROP TYPE IF EXISTS verdict_enum CASCADE"))
 
 
 # =============================================================================

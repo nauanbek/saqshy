@@ -76,7 +76,15 @@ async def callback_review_approve(
 
         # Update user stats with positive action
         if cache_service:
-            await _update_user_trust(cache_service, user_id, "approved")
+            try:
+                await _update_user_trust(cache_service, user_id, "approved")
+            except Exception as e:
+                logger.warning(
+                    "update_user_trust_failed",
+                    user_id=user_id,
+                    action="approved",
+                    error=str(e),
+                )
 
         # Edit the review message to show approval
         admin_name = callback.from_user.first_name if callback.from_user else "Admin"

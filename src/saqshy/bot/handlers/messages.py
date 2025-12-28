@@ -38,7 +38,7 @@ from aiogram.exceptions import (
 from aiogram.types import Message
 
 from saqshy.bot.action_engine import ActionEngine
-from saqshy.bot.pipeline import create_pipeline
+from saqshy.bot.pipeline import MessagePipeline, create_pipeline
 from saqshy.core.types import (
     GroupType,
     MessageContext,
@@ -83,6 +83,7 @@ async def handle_group_message(
     correlation_id: str | None = None,
     user_is_admin: bool = False,
     user_is_whitelisted: bool = False,
+    message_pipeline: MessagePipeline | None = None,
 ) -> None:
     """
     Handle incoming group messages through the spam detection pipeline.
@@ -93,6 +94,7 @@ async def handle_group_message(
     - Decision caching for repeated messages
     - LLM gray zone handling (60-80 score range)
     - Comprehensive metrics and audit trail
+    - Backpressure handling via pipeline-level circuit breaker
 
     Args:
         message: Incoming Telegram message.
@@ -106,6 +108,9 @@ async def handle_group_message(
         correlation_id: Request correlation ID for tracing.
         user_is_admin: Whether user is a group admin (from AuthMiddleware).
         user_is_whitelisted: Whether user is whitelisted (from AuthMiddleware).
+        message_pipeline: Optional shared pipeline instance for backpressure handling.
+            If provided, uses the shared pipeline's circuit breaker and semaphore.
+            If not provided, creates a new pipeline per message (no shared backpressure).
     """
     start_time = time.perf_counter()
 
@@ -119,6 +124,16 @@ async def handle_group_message(
         user_id=message.from_user.id if message.from_user else None,
         correlation_id=correlation_id,
     )
+
+    # Check pipeline backpressure if shared pipeline is provided
+    if message_pipeline is not None and not message_pipeline.circuit_breaker.allow_request():
+        log.warning(
+            "backpressure_skip",
+            circuit_state=message_pipeline.circuit_breaker.state,
+            active_requests=message_pipeline.active_requests,
+        )
+        # Fail-open: allow message through but don't process
+        return
 
     try:
         # Build message context
@@ -153,12 +168,17 @@ async def handle_group_message(
                 except ValueError:
                     pass
 
-        # Create pipeline with all services - this provides:
+        # Use shared pipeline if provided (for backpressure), otherwise create new one
+        # Shared pipeline provides:
+        # - Pipeline-level circuit breaker for backpressure
+        # - Semaphore for concurrent request limiting
+        # - Queue depth monitoring
+        # Per-message pipeline provides:
         # - Circuit breakers for fault tolerance
         # - Decision caching to avoid redundant computation
         # - LLM integration for gray zone (60-80 score)
         # - Metrics collection and audit trail
-        pipeline = create_pipeline(
+        pipeline = message_pipeline or create_pipeline(
             group_type=context.group_type.value,
             cache_service=cache_service,
             spam_db=spam_db,

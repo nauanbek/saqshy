@@ -3,7 +3,8 @@ import { test, expect, mockTelegramWebApp } from './fixtures/telegram';
 test.describe('Settings Page', () => {
   test.beforeEach(async ({ page }) => {
     // Mock Telegram WebApp and API responses
-    await mockTelegramWebApp(page, { groupId: 123 });
+    // Telegram group IDs are negative for supergroups
+    await mockTelegramWebApp(page, { groupId: -1001234567890 });
 
     // Mock API endpoints
     await page.route('**/api/groups/*/settings', async (route) => {
@@ -14,7 +15,7 @@ test.describe('Settings Page', () => {
           body: JSON.stringify({
             success: true,
             data: {
-              group_id: 123,
+              group_id: -1001234567890,
               group_type: 'general',
               linked_channel_id: null,
               sandbox_enabled: false,
@@ -35,7 +36,7 @@ test.describe('Settings Page', () => {
           body: JSON.stringify({
             success: true,
             data: {
-              group_id: 123,
+              group_id: -1001234567890,
               ...body,
               updated_at: new Date().toISOString(),
             },
@@ -46,7 +47,7 @@ test.describe('Settings Page', () => {
   });
 
   test('should load settings page', async ({ page }) => {
-    await page.goto('/app/?group_id=123');
+    await page.goto('/app/?group_id=-1001234567890');
 
     // Wait for loading to complete
     await expect(page.locator('h1')).toContainText('Group Settings');
@@ -59,7 +60,7 @@ test.describe('Settings Page', () => {
   });
 
   test('should navigate to stats page', async ({ page }) => {
-    await page.goto('/app/?group_id=123');
+    await page.goto('/app/?group_id=-1001234567890');
 
     // Wait for page to load
     await expect(page.locator('h1')).toContainText('Group Settings');
@@ -72,7 +73,7 @@ test.describe('Settings Page', () => {
   });
 
   test('should navigate to review queue', async ({ page }) => {
-    await page.goto('/app/?group_id=123');
+    await page.goto('/app/?group_id=-1001234567890');
 
     // Wait for page to load
     await expect(page.locator('h1')).toContainText('Group Settings');
@@ -85,7 +86,7 @@ test.describe('Settings Page', () => {
   });
 
   test('should change group type', async ({ page }) => {
-    await page.goto('/app/?group_id=123');
+    await page.goto('/app/?group_id=-1001234567890');
 
     // Wait for page to load
     await expect(page.locator('h1')).toContainText('Group Settings');
@@ -107,7 +108,7 @@ test.describe('Settings Page', () => {
         body: JSON.stringify({
           success: true,
           data: {
-            group_id: 123,
+            group_id: -1001234567890,
             group_type: 'general',
             linked_channel_id: null,
             sandbox_enabled: false,
@@ -122,7 +123,7 @@ test.describe('Settings Page', () => {
       });
     });
 
-    await page.goto('/app/?group_id=123');
+    await page.goto('/app/?group_id=-1001234567890');
 
     // Should show skeleton
     await expect(page.locator('.skeleton').first()).toBeVisible();

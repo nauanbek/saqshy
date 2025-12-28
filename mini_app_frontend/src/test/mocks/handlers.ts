@@ -1,8 +1,8 @@
 import { http, HttpResponse } from 'msw';
 
-// Mock data
+// Mock data - uses realistic negative group IDs (Telegram groups/supergroups are negative)
 const mockGroupSettings = {
-  group_id: 123,
+  group_id: -1001234567890,
   group_type: 'general' as const,
   linked_channel_id: null,
   sandbox_enabled: false,
@@ -15,7 +15,7 @@ const mockGroupSettings = {
 };
 
 const mockGroupStats = {
-  group_id: 123,
+  group_id: -1001234567890,
   period_days: 7,
   total_messages: 1000,
   allowed: 900,
@@ -35,7 +35,7 @@ const mockGroupStats = {
 const mockReviews = [
   {
     id: 'review-1',
-    group_id: 123,
+    group_id: -1001234567890,
     user_id: 111,
     username: 'spammer1',
     message_preview: 'Buy crypto now! Limited time offer...',
@@ -47,7 +47,7 @@ const mockReviews = [
   },
   {
     id: 'review-2',
-    group_id: 123,
+    group_id: -1001234567890,
     user_id: 222,
     username: null,
     message_preview: 'Check out this amazing deal...',

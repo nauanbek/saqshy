@@ -37,10 +37,12 @@ function AppContent(): React.ReactElement {
 
     // Try to parse from start_param
     if (startParam) {
-      const match = startParam.match(/^group_?(\d+)$/);
+      // Handle formats: group_-123456789, group-123456789, or -123456789
+      const match = startParam.match(/^group_?(-?\d+)$/);
       if (match && match[1]) {
         id = parseInt(match[1], 10);
-      } else if (/^\d+$/.test(startParam)) {
+      } else if (/^-?\d+$/.test(startParam)) {
+        // Plain numeric ID (can be negative for groups/supergroups)
         id = parseInt(startParam, 10);
       }
     }
@@ -49,7 +51,8 @@ function AppContent(): React.ReactElement {
     if (!id) {
       const urlParams = new URLSearchParams(window.location.search);
       const groupParam = urlParams.get('group_id');
-      if (groupParam && /^\d+$/.test(groupParam)) {
+      // Telegram group IDs are negative for groups/supergroups
+      if (groupParam && /^-?\d+$/.test(groupParam)) {
         id = parseInt(groupParam, 10);
       }
     }

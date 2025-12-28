@@ -2,7 +2,8 @@ import { test, expect, mockTelegramWebApp } from './fixtures/telegram';
 
 test.describe('Stats Page', () => {
   test.beforeEach(async ({ page }) => {
-    await mockTelegramWebApp(page, { groupId: 123 });
+    // Telegram group IDs are negative for supergroups
+    await mockTelegramWebApp(page, { groupId: -1001234567890 });
 
     // Mock stats API
     await page.route('**/api/groups/*/stats*', async (route) => {
@@ -15,7 +16,7 @@ test.describe('Stats Page', () => {
         body: JSON.stringify({
           success: true,
           data: {
-            group_id: 123,
+            group_id: -1001234567890,
             period_days: parseInt(periodDays),
             total_messages: 1000,
             allowed: 900,
@@ -43,7 +44,7 @@ test.describe('Stats Page', () => {
         body: JSON.stringify({
           success: true,
           data: {
-            group_id: 123,
+            group_id: -1001234567890,
             group_type: 'general',
             linked_channel_id: null,
             sandbox_enabled: false,
@@ -60,7 +61,7 @@ test.describe('Stats Page', () => {
   });
 
   test('should load stats page', async ({ page }) => {
-    await page.goto('/app/stats?group_id=123');
+    await page.goto('/app/stats?group_id=-1001234567890');
 
     await expect(page.locator('h1')).toContainText('Statistics');
 
@@ -69,7 +70,7 @@ test.describe('Stats Page', () => {
   });
 
   test('should change period', async ({ page }) => {
-    await page.goto('/app/stats?group_id=123');
+    await page.goto('/app/stats?group_id=-1001234567890');
 
     await expect(page.locator('h1')).toContainText('Statistics');
 
@@ -84,7 +85,7 @@ test.describe('Stats Page', () => {
   });
 
   test('should show verdict breakdown', async ({ page }) => {
-    await page.goto('/app/stats?group_id=123');
+    await page.goto('/app/stats?group_id=-1001234567890');
 
     // Wait for stats to load (formatted with comma)
     await expect(page.getByText('1,000')).toBeVisible();
@@ -95,7 +96,7 @@ test.describe('Stats Page', () => {
   });
 
   test('should navigate back to settings', async ({ page }) => {
-    await page.goto('/app/stats?group_id=123');
+    await page.goto('/app/stats?group_id=-1001234567890');
 
     await expect(page.locator('h1')).toContainText('Statistics');
 

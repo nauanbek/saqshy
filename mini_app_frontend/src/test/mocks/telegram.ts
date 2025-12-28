@@ -11,7 +11,7 @@ export function createMockTelegramWebApp(overrides: Partial<typeof window.Telegr
         username: 'testuser',
         language_code: 'en',
       },
-      start_param: 'group_123',
+      start_param: 'group_-1001234567890',
     },
     themeParams: {
       bg_color: '#ffffff',

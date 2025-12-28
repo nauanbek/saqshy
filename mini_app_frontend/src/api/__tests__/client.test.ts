@@ -10,13 +10,16 @@ import {
   ApiError,
 } from '../client';
 
+// Use realistic negative group ID (Telegram supergroups are negative)
+const TEST_GROUP_ID = -1001234567890;
+
 describe('API Client', () => {
   describe('getGroupSettings', () => {
     it('should fetch group settings successfully', async () => {
-      const settings = await getGroupSettings(123);
+      const settings = await getGroupSettings(TEST_GROUP_ID);
 
       expect(settings).toMatchObject({
-        group_id: 123,
+        group_id: TEST_GROUP_ID,
         group_type: 'general',
         sandbox_enabled: false,
       });
@@ -39,8 +42,8 @@ describe('API Client', () => {
         })
       );
 
-      await expect(getGroupSettings(123)).rejects.toThrow(ApiError);
-      await expect(getGroupSettings(123)).rejects.toMatchObject({
+      await expect(getGroupSettings(TEST_GROUP_ID)).rejects.toThrow(ApiError);
+      await expect(getGroupSettings(TEST_GROUP_ID)).rejects.toMatchObject({
         code: 'FORBIDDEN',
         status: 403,
       });
@@ -49,7 +52,7 @@ describe('API Client', () => {
 
   describe('updateGroupSettings', () => {
     it('should update settings and return new data', async () => {
-      const updated = await updateGroupSettings(123, {
+      const updated = await updateGroupSettings(TEST_GROUP_ID, {
         group_type: 'tech',
         sandbox_enabled: true,
       });
@@ -61,17 +64,17 @@ describe('API Client', () => {
 
   describe('getGroupStats', () => {
     it('should fetch stats with default period', async () => {
-      const stats = await getGroupStats(123);
+      const stats = await getGroupStats(TEST_GROUP_ID);
 
       expect(stats).toMatchObject({
-        group_id: 123,
+        group_id: TEST_GROUP_ID,
         period_days: 7,
         total_messages: 1000,
       });
     });
 
     it('should fetch stats with custom period', async () => {
-      const stats = await getGroupStats(123, 30);
+      const stats = await getGroupStats(TEST_GROUP_ID, 30);
 
       expect(stats.period_days).toBe(30);
     });
@@ -79,7 +82,7 @@ describe('API Client', () => {
 
   describe('getPendingReviews', () => {
     it('should fetch pending reviews', async () => {
-      const reviews = await getPendingReviews(123);
+      const reviews = await getPendingReviews(TEST_GROUP_ID);
 
       expect(reviews).toHaveLength(2);
       expect(reviews[0]).toMatchObject({
@@ -91,7 +94,7 @@ describe('API Client', () => {
 
   describe('submitReviewAction', () => {
     it('should submit approve action', async () => {
-      const result = await submitReviewAction(123, {
+      const result = await submitReviewAction(TEST_GROUP_ID, {
         review_id: 'review-1',
         action: 'approve',
       });
@@ -100,7 +103,7 @@ describe('API Client', () => {
     });
 
     it('should submit confirm_block action', async () => {
-      const result = await submitReviewAction(123, {
+      const result = await submitReviewAction(TEST_GROUP_ID, {
         review_id: 'review-2',
         action: 'confirm_block',
       });

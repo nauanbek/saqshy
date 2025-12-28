@@ -2,7 +2,8 @@ import { test, expect, mockTelegramWebApp } from './fixtures/telegram';
 
 test.describe('Review Queue Page', () => {
   test.beforeEach(async ({ page }) => {
-    await mockTelegramWebApp(page, { groupId: 123 });
+    // Telegram group IDs are negative for supergroups
+    await mockTelegramWebApp(page, { groupId: -1001234567890 });
 
     // Mock reviews API
     await page.route('**/api/groups/*/reviews', async (route) => {
@@ -15,7 +16,7 @@ test.describe('Review Queue Page', () => {
             data: [
               {
                 id: 'review-1',
-                group_id: 123,
+                group_id: -1001234567890,
                 user_id: 111,
                 username: 'spammer1',
                 message_preview: 'Buy crypto now! Limited time offer...',
@@ -27,7 +28,7 @@ test.describe('Review Queue Page', () => {
               },
               {
                 id: 'review-2',
-                group_id: 123,
+                group_id: -1001234567890,
                 user_id: 222,
                 username: null,
                 message_preview: 'Check out this amazing deal...',
@@ -60,7 +61,7 @@ test.describe('Review Queue Page', () => {
         body: JSON.stringify({
           success: true,
           data: {
-            group_id: 123,
+            group_id: -1001234567890,
             group_type: 'general',
             linked_channel_id: null,
             sandbox_enabled: false,
@@ -77,7 +78,7 @@ test.describe('Review Queue Page', () => {
   });
 
   test('should load review queue page', async ({ page }) => {
-    await page.goto('/app/review?group_id=123');
+    await page.goto('/app/review?group_id=-1001234567890');
 
     await expect(page.locator('h1')).toContainText('Review Queue');
 
@@ -87,7 +88,7 @@ test.describe('Review Queue Page', () => {
   });
 
   test('should show review items with risk score', async ({ page }) => {
-    await page.goto('/app/review?group_id=123');
+    await page.goto('/app/review?group_id=-1001234567890');
 
     await expect(page.locator('h1')).toContainText('Review Queue');
 
@@ -97,7 +98,7 @@ test.describe('Review Queue Page', () => {
   });
 
   test('should show threat tags', async ({ page }) => {
-    await page.goto('/app/review?group_id=123');
+    await page.goto('/app/review?group_id=-1001234567890');
 
     // Wait for content
     await expect(page.getByText('spammer1')).toBeVisible();
@@ -108,7 +109,7 @@ test.describe('Review Queue Page', () => {
   });
 
   test('should have approve button', async ({ page }) => {
-    await page.goto('/app/review?group_id=123');
+    await page.goto('/app/review?group_id=-1001234567890');
 
     await expect(page.getByText('spammer1')).toBeVisible();
 
@@ -130,7 +131,7 @@ test.describe('Review Queue Page', () => {
       });
     });
 
-    await page.goto('/app/review?group_id=123');
+    await page.goto('/app/review?group_id=-1001234567890');
 
     await expect(page.locator('h1')).toContainText('Review Queue');
 
@@ -139,7 +140,7 @@ test.describe('Review Queue Page', () => {
   });
 
   test('should navigate back to settings', async ({ page }) => {
-    await page.goto('/app/review?group_id=123');
+    await page.goto('/app/review?group_id=-1001234567890');
 
     await expect(page.locator('h1')).toContainText('Review Queue');
 

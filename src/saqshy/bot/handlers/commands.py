@@ -295,13 +295,15 @@ async def cmd_settings(
     buttons = []
 
     # Add Mini App button only if URL is configured and valid (HTTPS required)
+    # Note: WebApp buttons don't work in groups, only in private chats.
+    # Use regular URL button instead - opens in browser/Telegram's in-app browser.
     if mini_app_url and mini_app_url.startswith("https://"):
         # Use query parameter format: ?group_id=XXX
         settings_url = f"{mini_app_url}?group_id={chat_id}"
         buttons.append([
             InlineKeyboardButton(
                 text="Open Full Settings",
-                web_app=WebAppInfo(url=settings_url),
+                url=settings_url,
             ),
         ])
 

@@ -638,7 +638,7 @@ def create_routes(app: web.Application) -> None:
         )
 
 
-def create_middlewares(app: web.Application) -> list:
+async def create_middlewares(app: web.Application) -> list:
     """Create and configure all middlewares."""
     settings = app["settings"]
     middlewares = []
@@ -652,11 +652,15 @@ def create_middlewares(app: web.Application) -> list:
         db_middleware = create_db_session_middleware(app["session_factory"])
         middlewares.append(db_middleware)
 
+    # Create admin checker for Mini App authentication
+    admin_checker = await create_admin_checker(app)
+
     # Telegram WebApp authentication middleware
     bot_token = settings.telegram.bot_token.get_secret_value()
     auth_middleware = create_auth_middleware(
         bot_token,
         excluded_paths={"/api/health"},
+        admin_checker=admin_checker,
     )
     middlewares.append(auth_middleware)
 
@@ -700,7 +704,7 @@ async def _lifespan_wrapper(app: web.Application) -> AsyncIterator[None]:
         create_routes(app)
 
         # Configure middlewares after resources are initialized
-        middlewares = create_middlewares(app)
+        middlewares = await create_middlewares(app)
         # Insert middlewares at the beginning
         for middleware in reversed(middlewares):
             app.middlewares.insert(0, middleware)

@@ -264,7 +264,31 @@ class SandboxState(StateSerializationMixin):
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SandboxState:
-        """Deserialize from dictionary."""
+        """Deserialize from dictionary.
+
+        Raises:
+            KeyError: If required fields (user_id, chat_id, entered_at) are missing.
+            ValueError: If field values are invalid (e.g., invalid status enum).
+        """
+        # Validate required fields with descriptive errors
+        required_fields = ["user_id", "chat_id", "entered_at"]
+        missing = [f for f in required_fields if f not in data]
+        if missing:
+            raise KeyError(f"Missing required fields: {', '.join(missing)}")
+
+        # Validate field types
+        if not isinstance(data["user_id"], int):
+            raise ValueError(f"user_id must be int, got {type(data['user_id']).__name__}")
+        if not isinstance(data["chat_id"], int):
+            raise ValueError(f"chat_id must be int, got {type(data['chat_id']).__name__}")
+
+        # Parse status enum with validation
+        status_value = data.get("status", "active")
+        try:
+            status = SandboxStatus(status_value)
+        except ValueError:
+            raise ValueError(f"Invalid status value: {status_value}")
+
         return cls(
             user_id=data["user_id"],
             chat_id=data["chat_id"],
@@ -274,7 +298,7 @@ class SandboxState(StateSerializationMixin):
             approved_messages=data.get("approved_messages", 0),
             is_released=data.get("is_released", False),
             release_reason=data.get("release_reason"),
-            status=SandboxStatus(data.get("status", "active")),
+            status=status,
             violations=data.get("violations", 0),
             version=data.get("version", 0),
         )
@@ -431,7 +455,24 @@ class SoftWatchState(StateSerializationMixin):
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SoftWatchState:
-        """Deserialize from dictionary."""
+        """Deserialize from dictionary.
+
+        Raises:
+            KeyError: If required fields (user_id, chat_id, entered_at) are missing.
+            ValueError: If field values are invalid.
+        """
+        # Validate required fields with descriptive errors
+        required_fields = ["user_id", "chat_id", "entered_at"]
+        missing = [f for f in required_fields if f not in data]
+        if missing:
+            raise KeyError(f"Missing required fields: {', '.join(missing)}")
+
+        # Validate field types
+        if not isinstance(data["user_id"], int):
+            raise ValueError(f"user_id must be int, got {type(data['user_id']).__name__}")
+        if not isinstance(data["chat_id"], int):
+            raise ValueError(f"chat_id must be int, got {type(data['chat_id']).__name__}")
+
         return cls(
             user_id=data["user_id"],
             chat_id=data["chat_id"],

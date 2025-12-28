@@ -398,6 +398,9 @@ class DecisionRepository(BaseRepository[Decision]):
     async def get_pending_reviews(
         self,
         group_id: int,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> Sequence[Decision]:
         """Get decisions pending admin review.
 
@@ -405,6 +408,8 @@ class DecisionRepository(BaseRepository[Decision]):
 
         Args:
             group_id: Telegram chat_id
+            limit: Maximum number of decisions to return (None = no limit)
+            offset: Number of decisions to skip
 
         Returns:
             Sequence of Decision instances pending review
@@ -419,9 +424,40 @@ class DecisionRepository(BaseRepository[Decision]):
                 )
             )
             .order_by(Decision.created_at.asc())  # Oldest first
+            .offset(offset)
         )
+        if limit is not None:
+            stmt = stmt.limit(limit)
         result = await self.session.execute(stmt)
         return result.scalars().all()
+
+    async def count_pending_reviews(
+        self,
+        group_id: int,
+    ) -> int:
+        """Count decisions pending admin review.
+
+        Returns count of decisions with verdict=REVIEW that haven't been overridden.
+
+        Args:
+            group_id: Telegram chat_id
+
+        Returns:
+            Count of pending review decisions
+        """
+        stmt = (
+            select(func.count())
+            .select_from(Decision)
+            .where(
+                and_(
+                    Decision.group_id == group_id,
+                    Decision.verdict == Verdict.REVIEW,
+                    Decision.overridden_at.is_(None),
+                )
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one()
 
     async def get_user_history_in_group(
         self,
@@ -706,6 +742,9 @@ class DecisionRepository(BaseRepository[Decision]):
     async def get_pending_reviews_with_users(
         self,
         group_id: int,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> Sequence[Decision]:
         """Get decisions pending review with user data loaded.
 
@@ -713,6 +752,8 @@ class DecisionRepository(BaseRepository[Decision]):
 
         Args:
             group_id: Telegram chat_id
+            limit: Maximum number of decisions to return (None = no limit)
+            offset: Number of decisions to skip
 
         Returns:
             Sequence of Decision instances pending review with users loaded
@@ -728,6 +769,9 @@ class DecisionRepository(BaseRepository[Decision]):
                 )
             )
             .order_by(Decision.created_at.asc())  # Oldest first
+            .offset(offset)
         )
+        if limit is not None:
+            stmt = stmt.limit(limit)
         result = await self.session.execute(stmt)
         return result.scalars().unique().all()

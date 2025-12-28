@@ -31,9 +31,16 @@ from saqshy.mini_app.handlers import (
     get_user_stats,
     override_decision,
     update_group_settings,
+    validate_channel,
     whitelist_user,
 )
-from saqshy.mini_app.schemas import APIResponse
+from saqshy.mini_app.schemas import (
+    APIResponse,
+    DecisionOverrideRequest,
+    ListModifyRequest,
+    validate_telegram_chat_id,
+    validate_telegram_user_id,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -401,21 +408,31 @@ def create_mini_app_routes() -> web.RouteTableDef:
         - WebApp authentication
         - Admin status in the group
         """
+        # Validate path parameters with Telegram ID bounds checking
         try:
             group_id = int(request.match_info["group_id"])
-        except ValueError:
-            return _error_response("VALIDATION_ERROR", "Invalid group_id")
+            validate_telegram_chat_id(group_id)
+        except ValueError as e:
+            return _error_response("VALIDATION_ERROR", f"Invalid group_id: {e}")
 
         decision_id = request.match_info["decision_id"]
 
+        # Parse and validate request body with Pydantic schema
         try:
-            body = await request.json()
+            raw_body = await request.json()
         except json.JSONDecodeError as e:
             logger.warning("invalid_json_body", error=str(e), endpoint="override_decision")
             return _error_response("VALIDATION_ERROR", "Invalid JSON body", status=400)
         except Exception as e:
             logger.error("json_parse_unexpected", error_type=type(e).__name__, error=str(e))
             return _error_response("ERROR", "Internal server error", status=500)
+
+        # Validate body against Pydantic schema
+        try:
+            validated = DecisionOverrideRequest(**raw_body)
+            body = validated.model_dump()
+        except ValidationError as e:
+            return _error_response("VALIDATION_ERROR", str(e), status=422)
 
         session = _get_session(request)
         try:
@@ -555,20 +572,34 @@ def create_mini_app_routes() -> web.RouteTableDef:
         - WebApp authentication
         - Admin status in the group
         """
+        # Validate path parameters with Telegram ID bounds checking
         try:
             group_id = int(request.match_info["group_id"])
-            user_id = int(request.match_info["user_id"])
-        except ValueError:
-            return _error_response("VALIDATION_ERROR", "Invalid group_id or user_id")
+            validate_telegram_chat_id(group_id)
+        except ValueError as e:
+            return _error_response("VALIDATION_ERROR", f"Invalid group_id: {e}")
 
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            logger.debug("whitelist_user_no_body", error=str(e))
-            body = {}
+            user_id = int(request.match_info["user_id"])
+            validate_telegram_user_id(user_id)
+        except ValueError as e:
+            return _error_response("VALIDATION_ERROR", f"Invalid user_id: {e}")
+
+        # Parse and validate request body with Pydantic schema
+        try:
+            raw_body = await request.json()
+        except json.JSONDecodeError:
+            # Empty body is acceptable for this endpoint
+            raw_body = {}
         except Exception as e:
             logger.error("json_parse_unexpected", error_type=type(e).__name__, error=str(e))
-            body = {}
+            return _error_response("ERROR", "Failed to parse request body", status=400)
+
+        # Validate body against Pydantic schema
+        try:
+            body = ListModifyRequest(**raw_body).model_dump()
+        except ValidationError as e:
+            return _error_response("VALIDATION_ERROR", str(e), status=422)
 
         session = _get_session(request)
         try:
@@ -599,20 +630,34 @@ def create_mini_app_routes() -> web.RouteTableDef:
         - WebApp authentication
         - Admin status in the group
         """
+        # Validate path parameters with Telegram ID bounds checking
         try:
             group_id = int(request.match_info["group_id"])
-            user_id = int(request.match_info["user_id"])
-        except ValueError:
-            return _error_response("VALIDATION_ERROR", "Invalid group_id or user_id")
+            validate_telegram_chat_id(group_id)
+        except ValueError as e:
+            return _error_response("VALIDATION_ERROR", f"Invalid group_id: {e}")
 
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            logger.debug("blacklist_user_no_body", error=str(e))
-            body = {}
+            user_id = int(request.match_info["user_id"])
+            validate_telegram_user_id(user_id)
+        except ValueError as e:
+            return _error_response("VALIDATION_ERROR", f"Invalid user_id: {e}")
+
+        # Parse and validate request body with Pydantic schema
+        try:
+            raw_body = await request.json()
+        except json.JSONDecodeError:
+            # Empty body is acceptable for this endpoint
+            raw_body = {}
         except Exception as e:
             logger.error("json_parse_unexpected", error_type=type(e).__name__, error=str(e))
-            body = {}
+            return _error_response("ERROR", "Failed to parse request body", status=400)
+
+        # Validate body against Pydantic schema
+        try:
+            body = ListModifyRequest(**raw_body).model_dump()
+        except ValidationError as e:
+            return _error_response("VALIDATION_ERROR", str(e), status=422)
 
         session = _get_session(request)
         try:
@@ -625,6 +670,42 @@ def create_mini_app_routes() -> web.RouteTableDef:
             await session.rollback()
             logger.error("blacklist_user_failed", group_id=group_id, user_id=user_id, error=str(e))
             return _error_response("ERROR", "Blacklist operation failed", status=500)
+
+    # =========================================================================
+    # Channel Validation Endpoints
+    # =========================================================================
+
+    @routes.get("/api/channels/validate")
+    async def api_validate_channel(request: web.Request) -> web.Response:
+        """
+        Validate that a Telegram channel exists and the bot has access.
+
+        GET /api/channels/validate?channel=@channelname
+        GET /api/channels/validate?channel=-1001234567890
+
+        Query params:
+        - channel: Channel username (@name) or numeric ID (required)
+
+        Returns:
+        {
+            "valid": true/false,
+            "channel_id": -1001234567890,
+            "title": "Channel Name" (if valid),
+            "error": "error message" (if invalid)
+        }
+
+        Requires:
+        - WebApp authentication
+        """
+        channel_input = request.query.get("channel", "").strip()
+
+        if not channel_input:
+            return _error_response("VALIDATION_ERROR", "channel parameter is required")
+
+        result = await validate_channel(request, channel_input)
+
+        status = 200 if result.get("success") else _get_error_status(result)
+        return web.json_response(result, status=status)
 
     # =========================================================================
     # Legacy User Endpoints (group_id in body)

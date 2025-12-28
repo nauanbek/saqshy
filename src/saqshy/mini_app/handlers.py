@@ -31,6 +31,7 @@ from saqshy.db.repositories import (
 from saqshy.mini_app.auth import WebAppAuth
 from saqshy.mini_app.schemas import (
     APIResponse,
+    ChannelValidateResponse,
     DecisionDetail,
     DecisionListResponse,
     DecisionOverrideRequest,
@@ -58,6 +59,77 @@ def _format_datetime(dt: datetime | None) -> str | None:
     if dt is None:
         return None
     return dt.isoformat()
+
+
+# =============================================================================
+# Sensitive Data Filtering (SH1 fix)
+# =============================================================================
+
+# Keys that should be redacted from responses
+SENSITIVE_KEYS_PROFILE = {
+    "bio",  # User bio may contain personal info
+    "bio_text",
+    "phone_number",
+    "email",
+}
+
+SENSITIVE_KEYS_CONTENT = {
+    "original_text",  # Don't expose full message content
+    "text",
+    "raw_text",
+}
+
+SENSITIVE_KEYS_LLM = {
+    "system_prompt",  # Don't expose our prompts
+    "prompt",
+    "full_context",
+    "raw_input",
+}
+
+
+def _filter_sensitive_signals(
+    signals: dict[str, Any] | None,
+    redact_keys: set[str],
+) -> dict[str, Any]:
+    """
+    Filter sensitive keys from signal dictionaries.
+
+    Args:
+        signals: Signal dictionary to filter
+        redact_keys: Keys to redact from the output
+
+    Returns:
+        Filtered dictionary with sensitive keys replaced by "[REDACTED]"
+    """
+    if not signals:
+        return {}
+
+    filtered = {}
+    for key, value in signals.items():
+        if key.lower() in redact_keys:
+            filtered[key] = "[REDACTED]"
+        elif isinstance(value, dict):
+            # Recursively filter nested dicts
+            filtered[key] = _filter_sensitive_signals(value, redact_keys)
+        else:
+            filtered[key] = value
+
+    return filtered
+
+
+def _filter_llm_response(llm_response: dict[str, Any] | None) -> dict[str, Any] | None:
+    """
+    Filter sensitive data from LLM response.
+
+    Only returns verdict, confidence, and sanitized explanation.
+    Removes any raw prompts or system details.
+    """
+    if not llm_response:
+        return None
+
+    # Only return safe fields
+    safe_fields = {"verdict", "confidence", "reason", "explanation", "threat_type"}
+    return {k: v for k, v in llm_response.items() if k in safe_fields}
 
 
 def _decision_to_review_item(decision: Decision, user: User | None = None) -> ReviewItem:
@@ -454,21 +526,19 @@ async def get_review_queue(
             "Admin access required",
         ).model_dump()
 
-    # Fetch pending reviews
+    # Fetch pending reviews with database-level pagination (P3 fix)
     decision_repo = DecisionRepository(session)
-    pending = await decision_repo.get_pending_reviews(group_id)
 
-    # Get user info for the decisions
-    user_repo = UserRepository(session)
-    user_ids = [d.user_id for d in pending]
-    users = await user_repo.bulk_get_by_ids(user_ids)
+    # Get total count efficiently with COUNT query
+    total = await decision_repo.count_pending_reviews(group_id)
 
-    # Convert to review items
-    items = [_decision_to_review_item(d, users.get(d.user_id)) for d in pending]
+    # Fetch only the page we need with users eagerly loaded
+    pending = await decision_repo.get_pending_reviews_with_users(
+        group_id, limit=limit, offset=offset
+    )
 
-    # Apply pagination
-    total = len(items)
-    items = items[offset : offset + limit]
+    # Convert to review items - users are already loaded via joinedload
+    items = [_decision_to_review_item(d, d.user) for d in pending]
 
     response = ReviewQueueResponse(
         items=items,
@@ -737,11 +807,15 @@ async def get_decision_detail(
         risk_score=decision.risk_score,
         verdict=decision.verdict.value,
         threat_type=decision.threat_type,
-        profile_signals=decision.profile_signals or {},
-        content_signals=decision.content_signals or {},
-        behavior_signals=decision.behavior_signals or {},
+        profile_signals=_filter_sensitive_signals(
+            decision.profile_signals, SENSITIVE_KEYS_PROFILE
+        ),
+        content_signals=_filter_sensitive_signals(
+            decision.content_signals, SENSITIVE_KEYS_CONTENT
+        ),
+        behavior_signals=decision.behavior_signals or {},  # Behavior signals are safe
         llm_used=decision.llm_used,
-        llm_response=decision.llm_response,
+        llm_response=_filter_llm_response(decision.llm_response),
         llm_latency_ms=decision.llm_latency_ms,
         action_taken=decision.action_taken,
         message_deleted=decision.message_deleted,
@@ -977,3 +1051,188 @@ async def blacklist_user(
             "action": "blacklisted",
         }
     ).model_dump()
+
+
+# =============================================================================
+# Channel Validation Handlers
+# =============================================================================
+
+
+async def validate_channel(
+    request: web.Request,
+    channel_input: str,
+) -> dict[str, Any]:
+    """
+    Validate that a Telegram channel exists and the bot has access.
+
+    This endpoint verifies:
+    1. The channel exists
+    2. The bot is an administrator in the channel
+    3. The bot can check user subscriptions
+
+    Requires authentication (any authenticated user can validate).
+
+    Args:
+        request: aiohttp request (contains app with channel_subscription_service)
+        channel_input: Channel username (@channel) or numeric ID
+
+    Returns:
+        APIResponse with ChannelValidateResponse data.
+    """
+    # Get authenticated user (validation requires authentication)
+    auth: WebAppAuth | None = request.get("webapp_auth")
+    if auth is None or auth.user_id is None:
+        return APIResponse.fail(
+            "UNAUTHORIZED",
+            "Authentication required",
+        ).model_dump()
+
+    # Get channel subscription service from app context
+    channel_service = request.app.get("channel_subscription_service")
+    bot = request.app.get("bot")
+
+    if channel_service is None or bot is None:
+        logger.warning(
+            "channel_validation_service_unavailable",
+            has_channel_service=channel_service is not None,
+            has_bot=bot is not None,
+        )
+        return APIResponse.fail(
+            "ERROR",
+            "Channel validation service not available",
+        ).model_dump()
+
+    # Parse channel input - can be @username or numeric ID
+    channel_id: int | None = None
+    channel_title: str | None = None
+
+    try:
+        # If it starts with @, it's a username
+        if channel_input.startswith("@"):
+            # Use bot.get_chat to resolve username to ID
+            try:
+                chat = await bot.get_chat(channel_input)
+                channel_id = chat.id
+                channel_title = chat.title
+            except Exception as e:
+                error_str = str(e).lower()
+                if "chat not found" in error_str:
+                    response = ChannelValidateResponse(
+                        valid=False,
+                        channel_id=0,
+                        title=None,
+                        error=f"Channel {channel_input} not found",
+                    )
+                    return APIResponse.ok(response.model_dump()).model_dump()
+                elif "forbidden" in error_str:
+                    response = ChannelValidateResponse(
+                        valid=False,
+                        channel_id=0,
+                        title=None,
+                        error="Bot cannot access this channel. Add bot as admin first.",
+                    )
+                    return APIResponse.ok(response.model_dump()).model_dump()
+                else:
+                    logger.error(
+                        "channel_username_lookup_failed",
+                        channel_input=channel_input,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    )
+                    response = ChannelValidateResponse(
+                        valid=False,
+                        channel_id=0,
+                        title=None,
+                        error=f"Failed to lookup channel: {type(e).__name__}",
+                    )
+                    return APIResponse.ok(response.model_dump()).model_dump()
+        else:
+            # Try to parse as numeric ID
+            try:
+                channel_id = int(channel_input)
+            except ValueError:
+                response = ChannelValidateResponse(
+                    valid=False,
+                    channel_id=0,
+                    title=None,
+                    error="Invalid channel format. Use @username or numeric ID.",
+                )
+                return APIResponse.ok(response.model_dump()).model_dump()
+
+            # Fetch channel info to get title
+            try:
+                chat = await bot.get_chat(channel_id)
+                channel_title = chat.title
+            except Exception as e:
+                error_str = str(e).lower()
+                if "chat not found" in error_str:
+                    response = ChannelValidateResponse(
+                        valid=False,
+                        channel_id=channel_id,
+                        title=None,
+                        error="Channel not found",
+                    )
+                    return APIResponse.ok(response.model_dump()).model_dump()
+                elif "forbidden" in error_str:
+                    response = ChannelValidateResponse(
+                        valid=False,
+                        channel_id=channel_id,
+                        title=None,
+                        error="Bot cannot access this channel. Add bot as admin first.",
+                    )
+                    return APIResponse.ok(response.model_dump()).model_dump()
+                else:
+                    logger.error(
+                        "channel_id_lookup_failed",
+                        channel_id=channel_id,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    )
+                    response = ChannelValidateResponse(
+                        valid=False,
+                        channel_id=channel_id,
+                        title=None,
+                        error=f"Failed to lookup channel: {type(e).__name__}",
+                    )
+                    return APIResponse.ok(response.model_dump()).model_dump()
+
+        # Check if bot has admin access to the channel
+        is_valid, error_msg = await channel_service.check_bot_access(channel_id)
+
+        if is_valid:
+            logger.info(
+                "channel_validated",
+                channel_id=channel_id,
+                channel_title=channel_title,
+                user_id=auth.user_id,
+            )
+            response = ChannelValidateResponse(
+                valid=True,
+                channel_id=channel_id,
+                title=channel_title,
+                error=None,
+            )
+        else:
+            response = ChannelValidateResponse(
+                valid=False,
+                channel_id=channel_id,
+                title=channel_title,
+                error=error_msg or "Bot is not an administrator in this channel",
+            )
+
+        return APIResponse.ok(response.model_dump()).model_dump()
+
+    except Exception as e:
+        logger.error(
+            "channel_validation_failed",
+            channel_input=channel_input,
+            error=str(e),
+            error_type=type(e).__name__,
+        )
+        response = ChannelValidateResponse(
+            valid=False,
+            channel_id=channel_id or 0,
+            title=None,
+            error=f"Validation failed: {type(e).__name__}",
+        )
+        return APIResponse.ok(response.model_dump()).model_dump()

@@ -10,9 +10,45 @@ All API responses follow a consistent format:
 }
 """
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+# =============================================================================
+# Telegram ID Validation Constants
+# =============================================================================
+
+# Telegram user/chat ID range (based on observed values)
+# User IDs: positive integers, typically up to ~7 billion as of 2024
+# Chat IDs: negative for groups/channels (supergroup: -100XXXXXXXXXX)
+TELEGRAM_USER_ID_MIN = 1
+TELEGRAM_USER_ID_MAX = 10_000_000_000  # 10 billion upper limit
+
+TELEGRAM_CHAT_ID_MIN = -10_000_000_000_000  # Supergroups can have very negative IDs
+TELEGRAM_CHAT_ID_MAX = 10_000_000_000  # Positive for users, private chats
+
+
+def validate_telegram_user_id(user_id: int) -> int:
+    """Validate Telegram user ID is within reasonable bounds."""
+    if not isinstance(user_id, int):
+        raise ValueError("user_id must be an integer")
+    if user_id < TELEGRAM_USER_ID_MIN or user_id > TELEGRAM_USER_ID_MAX:
+        raise ValueError(
+            f"user_id must be between {TELEGRAM_USER_ID_MIN} and {TELEGRAM_USER_ID_MAX}"
+        )
+    return user_id
+
+
+def validate_telegram_chat_id(chat_id: int) -> int:
+    """Validate Telegram chat ID is within reasonable bounds."""
+    if not isinstance(chat_id, int):
+        raise ValueError("chat_id must be an integer")
+    if chat_id < TELEGRAM_CHAT_ID_MIN or chat_id > TELEGRAM_CHAT_ID_MAX:
+        raise ValueError(
+            f"chat_id must be between {TELEGRAM_CHAT_ID_MIN} and {TELEGRAM_CHAT_ID_MAX}"
+        )
+    return chat_id
 
 # =============================================================================
 # Type Aliases
@@ -454,3 +490,16 @@ class ValidateLinkedChannelResponse(BaseModel):
     valid: bool = Field(..., description="Whether bot has access to channel")
     channel_title: str | None = Field(None, description="Channel title if accessible")
     error: str | None = Field(None, description="Error message if not valid")
+
+
+class ChannelValidateResponse(BaseModel):
+    """Response for channel validation endpoint.
+
+    This schema is used by the /api/channels/validate endpoint
+    which accepts channel username (@channel) or numeric ID as query param.
+    """
+
+    valid: bool = Field(..., description="Whether the channel is valid and accessible")
+    channel_id: int = Field(..., description="Numeric channel ID")
+    title: str | None = Field(None, description="Channel title if accessible")
+    error: str | None = Field(None, description="Error message if validation failed")

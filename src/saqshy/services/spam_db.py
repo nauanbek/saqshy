@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -181,6 +182,7 @@ class SpamDB:
 
     # Cache configuration
     DEFAULT_CACHE_TTL = 300  # 5 minutes
+    DEFAULT_CACHE_MAX_SIZE = 1000  # Maximum cache entries (LRU eviction)
 
     # Minimum text length for processing
     MIN_TEXT_LENGTH = 10
@@ -192,6 +194,7 @@ class SpamDB:
         collection_name: str = DEFAULT_COLLECTION,
         qdrant_api_key: str | None = None,
         cache_ttl_seconds: float = DEFAULT_CACHE_TTL,
+        cache_max_size: int = DEFAULT_CACHE_MAX_SIZE,
     ):
         """
         Initialize SpamDB service.
@@ -202,19 +205,21 @@ class SpamDB:
             collection_name: Qdrant collection name for spam patterns
             qdrant_api_key: Optional Qdrant API key for authentication
             cache_ttl_seconds: TTL for embedding cache entries
+            cache_max_size: Maximum number of cached embeddings (LRU eviction)
         """
         self.qdrant_url = qdrant_url
         self.cohere_api_key = cohere_api_key
         self.collection_name = collection_name
         self.qdrant_api_key = qdrant_api_key
         self.cache_ttl_seconds = cache_ttl_seconds
+        self.cache_max_size = cache_max_size
 
         # Clients (initialized lazily)
         self._qdrant_client: AsyncQdrantClient | None = None
         self._cohere_client: cohere.AsyncClient | None = None
 
-        # In-memory embedding cache
-        self._embedding_cache: dict[str, CacheEntry] = {}
+        # In-memory embedding cache with LRU eviction (OrderedDict for O(1) operations)
+        self._embedding_cache: OrderedDict[str, CacheEntry] = OrderedDict()
 
         # Track initialization state
         self._initialized = False
@@ -372,8 +377,13 @@ class SpamDB:
         content = f"{input_type}:{text}"
         return hashlib.sha256(content.encode()).hexdigest()[:32]
 
-    def _clean_expired_cache(self) -> None:
-        """Remove expired entries from embedding cache."""
+    def _clean_expired_cache(self) -> int:
+        """
+        Remove expired entries from embedding cache.
+
+        Returns:
+            Number of entries removed.
+        """
         expired_keys = [
             key
             for key, entry in self._embedding_cache.items()
@@ -383,7 +393,47 @@ class SpamDB:
             del self._embedding_cache[key]
 
         if expired_keys:
-            logger.debug("cache_cleaned", removed_count=len(expired_keys))
+            logger.debug("cache_expired_cleaned", removed_count=len(expired_keys))
+
+        return len(expired_keys)
+
+    def _evict_lru_entries(self, count: int = 1) -> int:
+        """
+        Evict least recently used cache entries (O(1) with OrderedDict).
+
+        Args:
+            count: Number of entries to evict.
+
+        Returns:
+            Number of entries actually evicted.
+        """
+        evicted = 0
+        while evicted < count and self._embedding_cache:
+            # popitem(last=False) removes the oldest (first) item - O(1)
+            self._embedding_cache.popitem(last=False)
+            evicted += 1
+
+        if evicted:
+            logger.debug("cache_lru_evicted", evicted_count=evicted)
+
+        return evicted
+
+    def _ensure_cache_capacity(self) -> None:
+        """
+        Ensure cache doesn't exceed max size by evicting LRU entries.
+
+        First cleans expired entries, then evicts LRU if still over capacity.
+        """
+        # First try to clean expired entries
+        if len(self._embedding_cache) >= self.cache_max_size:
+            self._clean_expired_cache()
+
+        # If still over capacity, evict LRU entries
+        overflow = len(self._embedding_cache) - self.cache_max_size
+        if overflow >= 0:
+            # Evict enough entries to get below max + 10% buffer
+            evict_count = overflow + max(1, self.cache_max_size // 10)
+            self._evict_lru_entries(evict_count)
 
     @retry(
         retry=retry_if_exception_type(
@@ -422,8 +472,14 @@ class SpamDB:
         cached = self._embedding_cache.get(cache_key)
 
         if cached and not cached.is_expired(self.cache_ttl_seconds):
+            # Move to end to mark as recently used (LRU)
+            self._embedding_cache.move_to_end(cache_key)
             logger.debug("embedding_cache_hit", cache_key=cache_key[:8])
             return cached.embedding
+
+        # Remove expired entry if exists
+        if cached:
+            del self._embedding_cache[cache_key]
 
         # Generate embedding
         client = await self._get_cohere_client()
@@ -440,17 +496,17 @@ class SpamDB:
         embeddings_list = list(response.embeddings) if response.embeddings else []
         embedding: list[float] = [float(x) for x in embeddings_list[0]] if embeddings_list else []
 
-        # Cache the embedding
-        self._embedding_cache[cache_key] = CacheEntry(embedding=embedding)
+        # Ensure capacity before adding new entry
+        self._ensure_cache_capacity()
 
-        # Periodically clean expired cache entries
-        if len(self._embedding_cache) > 1000:
-            self._clean_expired_cache()
+        # Cache the embedding (at end = most recently used)
+        self._embedding_cache[cache_key] = CacheEntry(embedding=embedding)
 
         logger.debug(
             "embedding_generated",
             text_length=len(text),
             input_type=input_type,
+            cache_size=len(self._embedding_cache),
         )
 
         return embedding
@@ -782,6 +838,10 @@ class SpamDB:
                 "status": info.status.name if info.status else "unknown",
                 "vector_size": self.VECTOR_SIZE,
                 "cache_size": len(self._embedding_cache),
+                "cache_max_size": self.cache_max_size,
+                "cache_utilization_pct": round(
+                    len(self._embedding_cache) / self.cache_max_size * 100, 1
+                ) if self.cache_max_size > 0 else 0,
             }
 
         except Exception as e:

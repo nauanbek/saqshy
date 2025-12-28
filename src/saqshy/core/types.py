@@ -242,9 +242,14 @@ class RiskResult:
     Contains the final score, verdict, and detailed breakdown.
     """
 
-    score: int  # 0-100 cumulative risk score
+    score: int  # 0-100 cumulative risk score (clamped)
     verdict: Verdict
     threat_type: ThreatType = ThreatType.NONE
+
+    # Raw score before clamping (preserves trust signal contribution info)
+    # When raw_score < 0, it indicates strong trust signals were applied
+    # When raw_score > 100, it indicates severe risk signals were detected
+    raw_score: int | None = None
 
     # Score breakdown by category
     profile_score: int = 0
@@ -271,11 +276,15 @@ class RiskResult:
             raise ValueError(f"score must be 0-100, got {self.score}")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError(f"confidence must be 0.0-1.0, got {self.confidence}")
+        # Initialize raw_score to score if not set
+        if self.raw_score is None:
+            object.__setattr__(self, "raw_score", self.score)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert result to dictionary for serialization."""
         return {
             "score": self.score,
+            "raw_score": self.raw_score,
             "verdict": self.verdict.value,
             "threat_type": self.threat_type.value,
             "profile_score": self.profile_score,

@@ -24,12 +24,15 @@ Usage:
 
 # Authentication
 from saqshy.mini_app.auth import (
+    InMemoryRateLimiter,
     TelegramAuthMiddleware,
     WebAppAuth,
     WebAppData,
     WebAppUser,
     create_auth_middleware,
     create_cors_middleware,
+    create_rate_limit_middleware,
+    create_security_headers_middleware,
     validate_init_data,
 )
 
@@ -42,6 +45,7 @@ from saqshy.mini_app.routes import (
 # Schemas - Response types
 from saqshy.mini_app.schemas import (
     APIResponse,
+    ChannelValidateResponse,
     DecisionDetail,
     DecisionListResponse,
     DecisionOverrideRequest,
@@ -62,18 +66,22 @@ from saqshy.mini_app.schemas import (
 
 __all__ = [
     # Authentication
+    "InMemoryRateLimiter",
     "TelegramAuthMiddleware",
     "WebAppAuth",
     "WebAppData",
     "WebAppUser",
     "create_auth_middleware",
     "create_cors_middleware",
+    "create_rate_limit_middleware",
+    "create_security_headers_middleware",
     "validate_init_data",
     # Routes
     "create_mini_app_routes",
     "setup_routes",
     # Schemas
     "APIResponse",
+    "ChannelValidateResponse",
     "DecisionDetail",
     "DecisionListResponse",
     "DecisionOverrideRequest",

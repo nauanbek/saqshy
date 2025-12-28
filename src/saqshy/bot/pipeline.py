@@ -66,14 +66,226 @@ ANALYZER_TIMEOUT = 0.5  # 500ms per analyzer
 SPAM_DB_TIMEOUT = 0.5  # 500ms for spam DB (includes embedding)
 CHANNEL_SUB_TIMEOUT = 0.3  # 300ms for channel subscription check
 LLM_TIMEOUT = 10.0  # 10 seconds for LLM
-TOTAL_PIPELINE_TIMEOUT = 5.0  # 5 second hard limit
+# CRITICAL: TOTAL must be >= LLM_TIMEOUT + analyzer overhead
+# Otherwise LLM calls ALWAYS timeout (was 5.0, caused silent failures)
+TOTAL_PIPELINE_TIMEOUT = 12.0  # 12 second hard limit (LLM + 2s buffer)
 
 # Cache configuration
 DECISION_CACHE_TTL = 300  # 5 minutes
 
 
 # =============================================================================
-# Circuit Breaker
+# Pipeline-Level Circuit Breaker (Backpressure)
+# =============================================================================
+
+
+@dataclass
+class PipelineCircuitBreaker:
+    """
+    Circuit breaker for the entire message processing pipeline.
+
+    Opens when the system is overloaded (too many failures in a short time),
+    preventing cascading failures during spam attacks or service degradation.
+
+    States:
+        - closed: Normal operation, all requests allowed
+        - open: Circuit tripped, requests fail-fast with fallback
+        - half_open: Testing recovery, limited requests allowed
+
+    Usage:
+        >>> breaker = PipelineCircuitBreaker()
+        >>> if breaker.allow_request():
+        ...     try:
+        ...         result = await process_message(...)
+        ...         breaker.record_success()
+        ...     except Exception:
+        ...         breaker.record_failure()
+        ... else:
+        ...     # Return fallback response
+        ...     result = fallback_result()
+    """
+
+    failure_threshold: int = 10  # Failures before opening
+    recovery_timeout: float = 30.0  # Seconds before trying half_open
+    half_open_requests: int = 3  # Successful requests needed to close
+
+    def __post_init__(self) -> None:
+        """Initialize mutable state after dataclass creation."""
+        self._failures: int = 0
+        self._last_failure_time: float = 0.0
+        self._state: str = "closed"  # closed, open, half_open
+        self._half_open_successes: int = 0
+        self._total_failures: int = 0  # Lifetime counter for metrics
+        self._total_opens: int = 0  # Times circuit has opened
+
+    @property
+    def state(self) -> str:
+        """Current circuit breaker state."""
+        return self._state
+
+    @property
+    def failures(self) -> int:
+        """Current failure count."""
+        return self._failures
+
+    @property
+    def total_failures(self) -> int:
+        """Lifetime failure count for metrics."""
+        return self._total_failures
+
+    @property
+    def total_opens(self) -> int:
+        """Number of times circuit has opened."""
+        return self._total_opens
+
+    def record_failure(self) -> None:
+        """
+        Record a pipeline failure.
+
+        Increments failure counter and opens circuit if threshold exceeded.
+        """
+        self._failures += 1
+        self._total_failures += 1
+        self._last_failure_time = time.monotonic()
+
+        if self._failures >= self.failure_threshold and self._state != "open":
+            self._state = "open"
+            self._total_opens += 1
+            logger.warning(
+                "pipeline_circuit_opened",
+                failures=self._failures,
+                threshold=self.failure_threshold,
+                total_opens=self._total_opens,
+            )
+
+    def record_success(self) -> None:
+        """
+        Record a successful pipeline execution.
+
+        In half_open state, counts towards recovery threshold.
+        In closed state, decrements failure count (gradual recovery).
+        """
+        if self._state == "half_open":
+            self._half_open_successes += 1
+            if self._half_open_successes >= self.half_open_requests:
+                self._state = "closed"
+                self._failures = 0
+                self._half_open_successes = 0
+                logger.info(
+                    "pipeline_circuit_closed",
+                    half_open_successes=self.half_open_requests,
+                )
+        else:
+            # Gradual recovery in closed state
+            self._failures = max(0, self._failures - 1)
+
+    def is_open(self) -> bool:
+        """
+        Check if circuit is currently open (blocking requests).
+
+        Also handles transition from open to half_open when recovery
+        timeout has elapsed.
+
+        Returns:
+            True if circuit is open and requests should be rejected.
+        """
+        if self._state == "open":
+            elapsed = time.monotonic() - self._last_failure_time
+            if elapsed >= self.recovery_timeout:
+                self._state = "half_open"
+                self._half_open_successes = 0
+                logger.info(
+                    "pipeline_circuit_half_open",
+                    recovery_timeout=self.recovery_timeout,
+                )
+                return False
+            return True
+        return False
+
+    def allow_request(self) -> bool:
+        """
+        Check if a request should be allowed through.
+
+        Returns:
+            True if request should be processed, False if should fail-fast.
+        """
+        return not self.is_open()
+
+    def reset(self) -> None:
+        """
+        Reset the circuit breaker to initial state.
+
+        Useful for testing or manual recovery.
+        """
+        self._failures = 0
+        self._state = "closed"
+        self._half_open_successes = 0
+        self._last_failure_time = 0.0
+
+    def get_status(self) -> dict[str, Any]:
+        """
+        Get current circuit breaker status for monitoring.
+
+        Returns:
+            Dict with state, failure counts, and configuration.
+        """
+        return {
+            "state": self._state,
+            "failures": self._failures,
+            "failure_threshold": self.failure_threshold,
+            "half_open_successes": self._half_open_successes,
+            "half_open_required": self.half_open_requests,
+            "total_failures": self._total_failures,
+            "total_opens": self._total_opens,
+            "recovery_timeout": self.recovery_timeout,
+        }
+
+
+# =============================================================================
+# Degradation Levels
+# =============================================================================
+
+
+class DegradationLevel:
+    """
+    Defines graceful degradation levels for the pipeline.
+
+    When external services are unavailable or the system is overloaded,
+    the pipeline can operate in reduced capacity modes.
+    """
+
+    FULL = "full"  # All analyzers enabled, LLM available
+    REDUCED = "reduced"  # Core analyzers only, no LLM
+    MINIMAL = "minimal"  # Content analysis only, fastest path
+    EMERGENCY = "emergency"  # Fail-open, allow all messages
+
+
+DEGRADATION_CONFIG: dict[str, dict[str, Any]] = {
+    DegradationLevel.FULL: {
+        "analyzers": ["profile", "content", "behavior", "spam_db", "channel_sub"],
+        "llm_enabled": True,
+        "description": "Full pipeline with all analyzers and LLM",
+    },
+    DegradationLevel.REDUCED: {
+        "analyzers": ["profile", "content", "behavior"],
+        "llm_enabled": False,
+        "description": "Core analyzers only, external services skipped",
+    },
+    DegradationLevel.MINIMAL: {
+        "analyzers": ["content"],
+        "llm_enabled": False,
+        "description": "Content analysis only for minimum latency",
+    },
+    DegradationLevel.EMERGENCY: {
+        "analyzers": [],
+        "llm_enabled": False,
+        "description": "Emergency mode - fail-open, allow all messages",
+    },
+}
+
+
+# =============================================================================
+# Analyzer-Level Circuit Breaker
 # =============================================================================
 
 
@@ -84,6 +296,9 @@ class CircuitBreakerState:
 
     Implements the circuit breaker pattern to prevent repeated
     calls to failing services.
+
+    Distinguishes between timeout errors (transient, recover quickly)
+    and permanent errors (need longer recovery).
     """
 
     name: str
@@ -93,19 +308,61 @@ class CircuitBreakerState:
     last_failure_time: float = 0.0
     state: str = "closed"  # closed, open, half_open
 
-    def record_failure(self) -> None:
-        """Record a failure and potentially open the circuit."""
+    # Separate tracking for error types (H1 fix)
+    timeout_count: int = 0
+    permanent_count: int = 0
+    timeout_threshold: int = 8  # More tolerant of transient timeouts
+    permanent_threshold: int = 3  # Less tolerant of permanent errors
+    timeout_recovery: float = 30.0  # Faster recovery for transient errors
+    permanent_recovery: float = 120.0  # Slower recovery for permanent errors
+    _last_error_was_timeout: bool = False
+
+    def record_failure(self, is_timeout: bool = False) -> None:
+        """
+        Record a failure and potentially open the circuit.
+
+        Args:
+            is_timeout: True if failure was due to timeout (transient).
+                       False for permanent errors (connection refused, etc).
+        """
         self.failure_count += 1
         self.last_failure_time = time.monotonic()
+        self._last_error_was_timeout = is_timeout
 
-        if self.failure_count >= self.failure_threshold:
-            if self.state != "open":
+        if is_timeout:
+            self.timeout_count += 1
+            # Open only if timeout threshold exceeded
+            if self.timeout_count >= self.timeout_threshold and self.state != "open":
+                self.state = "open"
                 logger.warning(
                     "circuit_breaker_opened",
                     analyzer=self.name,
                     failures=self.failure_count,
+                    timeout_count=self.timeout_count,
+                    error_type="timeout",
                 )
+        else:
+            self.permanent_count += 1
+            # Open immediately on permanent error threshold (stricter)
+            if self.permanent_count >= self.permanent_threshold and self.state != "open":
+                self.state = "open"
+                logger.warning(
+                    "circuit_breaker_opened",
+                    analyzer=self.name,
+                    failures=self.failure_count,
+                    permanent_count=self.permanent_count,
+                    error_type="permanent",
+                )
+
+        # Fallback to legacy threshold for backwards compatibility
+        if self.failure_count >= self.failure_threshold and self.state != "open":
             self.state = "open"
+            logger.warning(
+                "circuit_breaker_opened",
+                analyzer=self.name,
+                failures=self.failure_count,
+                error_type="combined",
+            )
 
     def record_success(self) -> None:
         """Record a success and reset the circuit."""
@@ -115,6 +372,8 @@ class CircuitBreakerState:
                 analyzer=self.name,
             )
         self.failure_count = 0
+        self.timeout_count = 0
+        self.permanent_count = 0
         self.state = "closed"
 
     def is_open(self) -> bool:
@@ -123,19 +382,40 @@ class CircuitBreakerState:
             return False
 
         if self.state == "open":
-            # Check if recovery timeout has passed
+            # Use different recovery times based on last error type
+            recovery = (
+                self.timeout_recovery
+                if self._last_error_was_timeout
+                else self.permanent_recovery
+            )
+
             elapsed = time.monotonic() - self.last_failure_time
-            if elapsed >= self.recovery_timeout:
+            if elapsed >= recovery:
                 self.state = "half_open"
                 logger.info(
                     "circuit_breaker_half_open",
                     analyzer=self.name,
+                    recovery_time=recovery,
+                    error_type="timeout" if self._last_error_was_timeout else "permanent",
                 )
                 return False
             return True
 
         # half_open: allow one request
         return False
+
+    def get_status(self) -> dict[str, Any]:
+        """Get detailed status for monitoring."""
+        return {
+            "name": self.name,
+            "state": self.state,
+            "failure_count": self.failure_count,
+            "timeout_count": self.timeout_count,
+            "permanent_count": self.permanent_count,
+            "failure_threshold": self.failure_threshold,
+            "timeout_threshold": self.timeout_threshold,
+            "permanent_threshold": self.permanent_threshold,
+        }
 
 
 # =============================================================================
@@ -243,6 +523,11 @@ class MessagePipeline:
         >>> print(f"Verdict: {result.verdict}, Score: {result.score}")
     """
 
+    # Default configuration for backpressure handling
+    DEFAULT_MAX_CONCURRENT_REQUESTS = 100
+    DEFAULT_QUEUE_WARNING_THRESHOLD = 50
+    DEFAULT_QUEUE_CRITICAL_THRESHOLD = 80
+
     def __init__(
         self,
         risk_calculator: RiskCalculator,
@@ -255,6 +540,7 @@ class MessagePipeline:
         channel_subscription: ChannelSubscriptionService | None = None,
         metrics_collector: MetricsCollector | None = None,
         audit_trail: AuditTrail | None = None,
+        max_concurrent_requests: int | None = None,
     ) -> None:
         """
         Initialize the message pipeline.
@@ -270,6 +556,7 @@ class MessagePipeline:
             channel_subscription: Optional service for channel subscription checks.
             metrics_collector: Optional MetricsCollector for observability.
             audit_trail: Optional AuditTrail for decision logging.
+            max_concurrent_requests: Maximum concurrent pipeline executions (default: 100).
         """
         self.risk_calculator = risk_calculator
         self.content_analyzer = content_analyzer
@@ -292,6 +579,23 @@ class MessagePipeline:
             "llm": CircuitBreakerState(name="llm", failure_threshold=3, recovery_timeout=60.0),
         }
 
+        # Pipeline-level circuit breaker for backpressure
+        self.circuit_breaker = PipelineCircuitBreaker()
+
+        # Semaphore for limiting concurrent requests
+        max_concurrent = max_concurrent_requests or self.DEFAULT_MAX_CONCURRENT_REQUESTS
+        self.request_semaphore = asyncio.Semaphore(max_concurrent)
+        self._max_concurrent_requests = max_concurrent
+
+        # Queue depth tracking
+        self._active_requests: int = 0
+        self._peak_active_requests: int = 0
+        self._total_requests_processed: int = 0
+        self._requests_rejected_by_backpressure: int = 0
+
+        # Degradation level
+        self._degradation_level: str = DegradationLevel.FULL
+
         logger.info(
             "pipeline_initialized",
             has_spam_db=spam_db is not None,
@@ -300,6 +604,7 @@ class MessagePipeline:
             has_channel_sub=channel_subscription is not None,
             has_metrics=metrics_collector is not None,
             has_audit=audit_trail is not None,
+            max_concurrent_requests=max_concurrent,
         )
 
     # =========================================================================
@@ -316,11 +621,12 @@ class MessagePipeline:
         Process a message through the full pipeline.
 
         This is the main entry point for message analysis. It:
-        1. Checks decision cache
-        2. Runs all analyzers in parallel
-        3. Calculates risk score
-        4. Optionally calls LLM for gray zone
-        5. Returns final verdict
+        1. Checks backpressure (circuit breaker and concurrency limit)
+        2. Checks decision cache
+        3. Runs all analyzers in parallel
+        4. Calculates risk score
+        5. Optionally calls LLM for gray zone
+        6. Returns final verdict
 
         Args:
             context: MessageContext with message data.
@@ -341,6 +647,103 @@ class MessagePipeline:
         # Get correlation ID for tracing
         correlation_id = get_correlation_id()
 
+        # Check pipeline circuit breaker (backpressure)
+        if not self.circuit_breaker.allow_request():
+            self._requests_rejected_by_backpressure += 1
+            log.warning(
+                "pipeline_circuit_open_rejected",
+                correlation_id=correlation_id,
+                rejected_count=self._requests_rejected_by_backpressure,
+                circuit_state=self.circuit_breaker.state,
+            )
+
+            # Record rejection in metrics
+            if self.metrics_collector:
+                await self.metrics_collector.record_error(
+                    group_type=context.group_type.value,
+                    error_type="backpressure_rejected",
+                )
+
+            # Fail-open: allow message through when overloaded
+            return RiskResult(
+                score=0,
+                verdict=Verdict.ALLOW,
+                signals=Signals(),
+                contributing_factors=["Backpressure - pipeline circuit open"],
+            )
+
+        # Check if we're at degradation threshold
+        self._check_degradation_threshold(log)
+
+        # Acquire semaphore for concurrent request limiting
+        try:
+            # Use non-blocking acquire with immediate timeout for backpressure
+            acquired = self.request_semaphore.locked()
+            if acquired and self._active_requests >= self._max_concurrent_requests:
+                # At capacity, increment rejection counter but still process
+                # (semaphore will handle actual limiting)
+                log.debug(
+                    "pipeline_at_capacity",
+                    active_requests=self._active_requests,
+                    max_concurrent=self._max_concurrent_requests,
+                )
+
+            async with self.request_semaphore:
+                return await self._process_with_tracking(
+                    context=context,
+                    linked_channel_id=linked_channel_id,
+                    admin_ids=admin_ids,
+                    metrics=metrics,
+                    log=log,
+                    correlation_id=correlation_id,
+                )
+
+        except Exception as e:
+            # Should not happen, but safety net
+            log.exception(
+                "pipeline_semaphore_error",
+                correlation_id=correlation_id,
+                error=str(e),
+            )
+            return RiskResult(
+                score=0,
+                verdict=Verdict.ALLOW,
+                signals=Signals(),
+                contributing_factors=["Pipeline semaphore error - defaulting to allow"],
+            )
+
+    async def _process_with_tracking(
+        self,
+        context: MessageContext,
+        linked_channel_id: int | None,
+        admin_ids: set[int] | None,
+        metrics: PipelineMetrics,
+        log: Any,
+        correlation_id: str,
+    ) -> RiskResult:
+        """
+        Process message with active request tracking.
+
+        Wraps the internal processing with queue depth tracking
+        and circuit breaker recording.
+
+        Args:
+            context: Message context.
+            linked_channel_id: Linked channel ID.
+            admin_ids: Admin user IDs.
+            metrics: Metrics collector.
+            log: Bound logger.
+            correlation_id: Request correlation ID.
+
+        Returns:
+            RiskResult from the pipeline.
+        """
+        # Track active requests
+        self._active_requests += 1
+        self._total_requests_processed += 1
+        if self._active_requests > self._peak_active_requests:
+            self._peak_active_requests = self._active_requests
+
         try:
             # Apply total pipeline timeout
             result = await asyncio.wait_for(
@@ -355,15 +758,19 @@ class MessagePipeline:
             )
 
             metrics.end_time = time.monotonic()
-            total_ms = (metrics.end_time - metrics.start_time) * 1000
 
             log.info(
                 "pipeline_completed",
                 correlation_id=correlation_id,
                 verdict=result.verdict.value,
                 score=result.score,
+                active_requests=self._active_requests,
+                degradation_level=self._degradation_level,
                 **metrics.to_dict(),
             )
+
+            # Record success on circuit breaker
+            self.circuit_breaker.record_success()
 
             # Record metrics and audit trail
             await self._record_observability(
@@ -381,8 +788,12 @@ class MessagePipeline:
                 "pipeline_timeout",
                 correlation_id=correlation_id,
                 timeout_seconds=TOTAL_PIPELINE_TIMEOUT,
+                active_requests=self._active_requests,
                 **metrics.to_dict(),
             )
+
+            # Record timeout failure on circuit breaker (transient, recovers faster)
+            self.circuit_breaker.record_failure()
 
             # Record error in metrics
             if self.metrics_collector:
@@ -406,8 +817,12 @@ class MessagePipeline:
                 correlation_id=correlation_id,
                 error=str(e),
                 error_type=type(e).__name__,
+                active_requests=self._active_requests,
                 **metrics.to_dict(),
             )
+
+            # Record failure on circuit breaker
+            self.circuit_breaker.record_failure()
 
             # Record error in metrics
             if self.metrics_collector:
@@ -422,6 +837,41 @@ class MessagePipeline:
                 verdict=Verdict.ALLOW,
                 signals=Signals(),
                 contributing_factors=["Pipeline error - defaulting to allow"],
+            )
+
+        finally:
+            # Always decrement active request count
+            self._active_requests -= 1
+
+    def _check_degradation_threshold(self, log: Any) -> None:
+        """
+        Check if we should change degradation level based on queue depth.
+
+        Args:
+            log: Bound logger for warnings.
+        """
+        queue_utilization = (
+            self._active_requests / self._max_concurrent_requests * 100
+            if self._max_concurrent_requests > 0
+            else 0
+        )
+
+        old_level = self._degradation_level
+
+        if queue_utilization >= self.DEFAULT_QUEUE_CRITICAL_THRESHOLD:
+            self._degradation_level = DegradationLevel.MINIMAL
+        elif queue_utilization >= self.DEFAULT_QUEUE_WARNING_THRESHOLD:
+            self._degradation_level = DegradationLevel.REDUCED
+        else:
+            self._degradation_level = DegradationLevel.FULL
+
+        if old_level != self._degradation_level:
+            log.warning(
+                "degradation_level_changed",
+                old_level=old_level,
+                new_level=self._degradation_level,
+                queue_utilization=round(queue_utilization, 1),
+                active_requests=self._active_requests,
             )
 
     async def _record_observability(
@@ -780,7 +1230,8 @@ class MessagePipeline:
             )
 
             if circuit_breaker:
-                circuit_breaker.record_failure()
+                # Timeout is transient - more tolerant threshold, faster recovery
+                circuit_breaker.record_failure(is_timeout=True)
 
             return default
 
@@ -796,7 +1247,8 @@ class MessagePipeline:
             )
 
             if circuit_breaker:
-                circuit_breaker.record_failure()
+                # Permanent error - stricter threshold, slower recovery
+                circuit_breaker.record_failure(is_timeout=False)
 
             return default
 
@@ -944,7 +1396,8 @@ class MessagePipeline:
                 timeout=LLM_TIMEOUT,
             )
             if llm_circuit:
-                llm_circuit.record_failure()
+                # Timeout is transient - more tolerant, faster recovery
+                llm_circuit.record_failure(is_timeout=True)
             return result
 
         except Exception as e:
@@ -954,7 +1407,8 @@ class MessagePipeline:
                 error=str(e),
             )
             if llm_circuit:
-                llm_circuit.record_failure()
+                # Permanent error - stricter threshold
+                llm_circuit.record_failure(is_timeout=False)
             return result
 
     # =========================================================================
@@ -1207,14 +1661,88 @@ class MessagePipeline:
         Returns:
             Dict mapping analyzer name to circuit breaker status.
         """
+        return {name: cb.get_status() for name, cb in self._circuit_breakers.items()}
+
+    def get_backpressure_status(self) -> dict[str, Any]:
+        """
+        Get current backpressure and queue depth status.
+
+        Returns:
+            Dict with pipeline backpressure metrics including:
+            - circuit_breaker: Pipeline-level circuit breaker status
+            - queue_depth: Current and peak active requests
+            - degradation_level: Current degradation level
+            - totals: Total requests processed and rejected
+        """
+        queue_utilization = (
+            self._active_requests / self._max_concurrent_requests * 100
+            if self._max_concurrent_requests > 0
+            else 0
+        )
+
         return {
-            name: {
-                "state": cb.state,
-                "failure_count": cb.failure_count,
-                "failure_threshold": cb.failure_threshold,
-            }
-            for name, cb in self._circuit_breakers.items()
+            "circuit_breaker": self.circuit_breaker.get_status(),
+            "queue_depth": {
+                "active_requests": self._active_requests,
+                "peak_active_requests": self._peak_active_requests,
+                "max_concurrent_requests": self._max_concurrent_requests,
+                "utilization_percent": round(queue_utilization, 1),
+            },
+            "degradation_level": self._degradation_level,
+            "totals": {
+                "total_requests_processed": self._total_requests_processed,
+                "requests_rejected_by_backpressure": self._requests_rejected_by_backpressure,
+            },
         }
+
+    @property
+    def degradation_level(self) -> str:
+        """Current degradation level."""
+        return self._degradation_level
+
+    @property
+    def active_requests(self) -> int:
+        """Number of currently active requests."""
+        return self._active_requests
+
+    @property
+    def is_under_pressure(self) -> bool:
+        """
+        Check if pipeline is under backpressure.
+
+        Returns:
+            True if circuit is open or queue utilization is above warning threshold.
+        """
+        if self.circuit_breaker.is_open():
+            return True
+        queue_utilization = (
+            self._active_requests / self._max_concurrent_requests * 100
+            if self._max_concurrent_requests > 0
+            else 0
+        )
+        return queue_utilization >= self.DEFAULT_QUEUE_WARNING_THRESHOLD
+
+    def set_degradation_level(self, level: str) -> None:
+        """
+        Manually set degradation level (for testing or manual override).
+
+        Args:
+            level: One of DegradationLevel constants.
+        """
+        if level in (
+            DegradationLevel.FULL,
+            DegradationLevel.REDUCED,
+            DegradationLevel.MINIMAL,
+            DegradationLevel.EMERGENCY,
+        ):
+            old_level = self._degradation_level
+            self._degradation_level = level
+            if old_level != level:
+                logger.info(
+                    "degradation_level_manually_set",
+                    old_level=old_level,
+                    new_level=level,
+                )
 
     async def health_check(self) -> dict[str, bool]:
         """
@@ -1228,6 +1756,7 @@ class MessagePipeline:
             "content_analyzer": True,  # Always available (no external deps)
             "profile_analyzer": True,  # Always available (no external deps)
             "behavior_analyzer": True,  # Always available (providers may be missing)
+            "pipeline_circuit": not self.circuit_breaker.is_open(),
         }
 
         # Check optional services

@@ -177,7 +177,9 @@ class RiskCalculator:
                     f"Trust level: {self.trust_level.value} (+{trust_adjustment})"
                 )
 
-        # Clamp to 0-100 range
+        # Clamp to 0-100 range (preserve raw_score for diagnostics)
+        # When raw_score < 0, it indicates strong trust signals were applied
+        # When raw_score > 100, it indicates severe risk signals were detected
         final_score = max(0, min(100, raw_score))
         breakdown.total_score = final_score
 
@@ -192,6 +194,7 @@ class RiskCalculator:
 
         return RiskResult(
             score=final_score,
+            raw_score=raw_score,  # Preserve unclamped score for diagnostics
             verdict=verdict,
             threat_type=threat_type,
             profile_score=breakdown.profile_score,
@@ -474,8 +477,24 @@ class RiskCalculator:
         return score
 
     def _score_to_verdict(self, score: int) -> Verdict:
-        """Convert score to verdict based on group thresholds."""
+        """Convert score to verdict based on group thresholds.
+
+        Raises:
+            ValueError: If thresholds tuple has wrong length.
+            KeyError: If group_type is not in THRESHOLDS.
+        """
+        if self.group_type not in THRESHOLDS:
+            raise KeyError(f"Unknown group_type: {self.group_type}")
+
         thresholds = THRESHOLDS[self.group_type]
+
+        # Validate thresholds tuple has exactly 4 values
+        if len(thresholds) != 4:
+            raise ValueError(
+                f"THRESHOLDS[{self.group_type}] must have exactly 4 values "
+                f"(watch, limit, review, block), got {len(thresholds)}"
+            )
+
         watch, limit, review, block = thresholds
 
         if score >= block:
@@ -490,27 +509,56 @@ class RiskCalculator:
             return Verdict.ALLOW
 
     def _detect_threat_type(self, signals: Signals, score: int) -> ThreatType:
-        """Detect the type of threat based on signals."""
+        """Detect the type of threat based on signals.
+
+        Priority order (most specific to least specific):
+        1. CRYPTO_SCAM: Crypto scam phrases detected (highest priority)
+        2. SCAM: Wallet addresses with high score
+        3. PHISHING: Suspicious URLs/patterns (future expansion)
+        4. RAID: Coordinated cross-group attack
+        5. FLOOD: Message burst from single user
+        6. SPAM: High spam DB similarity
+        7. PROMOTION: Commercial content
+        8. UNKNOWN: Score >= 30 but no specific signals
+        9. NONE: Score < 30
+        """
         if score < 30:
             return ThreatType.NONE
 
-        # Check for specific threat types based on signals
+        # Collect candidate threat types with priority scores
+        candidates: list[tuple[int, ThreatType]] = []
+
+        # Priority 1: Crypto scam (highest specificity)
         if signals.content.has_crypto_scam_phrases:
-            return ThreatType.CRYPTO_SCAM
+            candidates.append((100, ThreatType.CRYPTO_SCAM))
 
+        # Priority 2: Scam with wallet addresses
         if signals.content.has_wallet_addresses and score >= 50:
-            return ThreatType.SCAM
+            candidates.append((90, ThreatType.SCAM))
 
-        if signals.network.spam_db_similarity >= 0.80:
-            return ThreatType.SPAM
+        # Priority 3: Coordinated raid (cross-group attack)
+        if signals.network.duplicate_messages_in_other_groups >= 3:
+            candidates.append((85, ThreatType.RAID))
+        elif signals.network.duplicate_messages_in_other_groups > 0:
+            candidates.append((70, ThreatType.RAID))
 
+        # Priority 4: Flood (message burst)
         if signals.behavior.messages_in_last_hour >= 10:
-            return ThreatType.FLOOD
+            candidates.append((75, ThreatType.FLOOD))
 
-        if signals.network.duplicate_messages_in_other_groups > 0:
-            return ThreatType.RAID
+        # Priority 5: Spam DB match
+        if signals.network.spam_db_similarity >= 0.95:
+            candidates.append((95, ThreatType.SPAM))  # Very high similarity = high priority
+        elif signals.network.spam_db_similarity >= 0.80:
+            candidates.append((65, ThreatType.SPAM))
 
+        # Priority 6: Promotional content (lowest priority)
         if signals.content.url_count >= 3 or signals.content.has_money_patterns:
-            return ThreatType.PROMOTION
+            candidates.append((50, ThreatType.PROMOTION))
+
+        # Return highest priority threat type
+        if candidates:
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            return candidates[0][1]
 
         return ThreatType.UNKNOWN

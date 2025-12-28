@@ -249,6 +249,7 @@ class ContentAnalyzer:
         Calculate the ratio of uppercase letters to total letters.
 
         Only considers alphabetic characters (ignores numbers, punctuation).
+        Result is rounded to 4 decimal places to avoid floating point precision issues.
 
         Args:
             text: Input text to analyze.
@@ -264,7 +265,9 @@ class ContentAnalyzer:
             return 0.0
 
         uppercase = sum(1 for c in letters if c.isupper())
-        return uppercase / len(letters)
+        # Round to 4 decimal places to avoid floating point precision issues
+        # at boundary comparisons (e.g., 0.5 vs 0.50000001)
+        return round(uppercase / len(letters), 4)
 
     def _count_emojis(self, text: str) -> int:
         """

@@ -10,7 +10,9 @@ import hashlib
 import hmac
 import json
 import os
+import time
 import urllib.parse
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -503,7 +505,9 @@ def create_cors_middleware(
                 response = e
 
         # Add CORS headers if origin is allowed
-        if origin in allowed_origins or "*" in allowed_origins:
+        # SECURITY: Do NOT allow wildcard "*" with credentials - this is a security vulnerability
+        # Only explicit origin matching is allowed for credentialed requests
+        if origin and origin in allowed_origins:
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
             response.headers["Access-Control-Allow-Headers"] = (
@@ -511,7 +515,258 @@ def create_cors_middleware(
             )
             response.headers["Access-Control-Max-Age"] = "86400"
             response.headers["Access-Control-Allow-Credentials"] = "true"
+        elif "*" in allowed_origins:
+            # Wildcard mode: allow any origin but WITHOUT credentials
+            # This is only safe for public APIs with no authentication
+            logger.warning(
+                "cors_wildcard_mode",
+                origin=origin,
+                warning="Wildcard CORS mode enabled - credentials NOT allowed",
+            )
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+            response.headers["Access-Control-Max-Age"] = "86400"
+            # NOTE: Access-Control-Allow-Credentials is NOT set for wildcard
 
         return response
 
     return cors_middleware
+
+
+# =============================================================================
+# Rate Limiting Middleware (SH2 fix)
+# =============================================================================
+
+# Default rate limits
+DEFAULT_API_RATE_LIMIT = 100  # Requests per window
+DEFAULT_API_RATE_WINDOW = 60  # Seconds
+
+
+class InMemoryRateLimiter:
+    """
+    Simple in-memory rate limiter using sliding window.
+
+    Uses OrderedDict for O(1) LRU eviction.
+    Thread-safe within single asyncio event loop.
+    """
+
+    def __init__(
+        self,
+        limit: int = DEFAULT_API_RATE_LIMIT,
+        window_seconds: int = DEFAULT_API_RATE_WINDOW,
+        max_entries: int = 10000,
+    ):
+        """
+        Initialize rate limiter.
+
+        Args:
+            limit: Maximum requests per window per user.
+            window_seconds: Time window in seconds.
+            max_entries: Maximum number of user entries to track.
+        """
+        self.limit = limit
+        self.window = window_seconds
+        self.max_entries = max_entries
+        self._entries: OrderedDict[int, list[float]] = OrderedDict()
+
+    def is_allowed(self, user_id: int) -> tuple[bool, int]:
+        """
+        Check if request is allowed for user.
+
+        Args:
+            user_id: Telegram user ID.
+
+        Returns:
+            Tuple of (allowed, requests_remaining).
+        """
+        now = time.monotonic()
+        window_start = now - self.window
+
+        # Get or create entry
+        if user_id not in self._entries:
+            self._entries[user_id] = []
+
+        # Move to end (LRU)
+        self._entries.move_to_end(user_id)
+
+        # Clean old timestamps
+        timestamps = self._entries[user_id]
+        self._entries[user_id] = [ts for ts in timestamps if ts > window_start]
+
+        # Check limit
+        current_count = len(self._entries[user_id])
+        if current_count >= self.limit:
+            return False, 0
+
+        # Add new timestamp
+        self._entries[user_id].append(now)
+
+        # Evict oldest entries if over capacity
+        while len(self._entries) > self.max_entries:
+            self._entries.popitem(last=False)
+
+        return True, self.limit - current_count - 1
+
+    def get_retry_after(self, user_id: int) -> int:
+        """Get seconds until next allowed request."""
+        if user_id not in self._entries or not self._entries[user_id]:
+            return 0
+
+        oldest = min(self._entries[user_id])
+        retry_after = int(oldest + self.window - time.monotonic())
+        return max(0, retry_after)
+
+
+def create_rate_limit_middleware(
+    limit: int = DEFAULT_API_RATE_LIMIT,
+    window_seconds: int = DEFAULT_API_RATE_WINDOW,
+) -> Callable:
+    """
+    Create rate limiting middleware for the Mini App API.
+
+    Args:
+        limit: Maximum requests per window per user.
+        window_seconds: Time window in seconds.
+
+    Returns:
+        Configured rate limiting middleware function.
+    """
+    # Override from environment if set
+    limit = int(os.getenv("API_RATE_LIMIT", str(limit)))
+    window_seconds = int(os.getenv("API_RATE_WINDOW", str(window_seconds)))
+
+    limiter = InMemoryRateLimiter(limit=limit, window_seconds=window_seconds)
+
+    @web.middleware
+    async def rate_limit_middleware(
+        request: web.Request,
+        handler: Callable[[web.Request], Awaitable[web.Response]],
+    ) -> web.Response:
+        """Apply rate limiting based on authenticated user."""
+        # Skip for OPTIONS (CORS preflight)
+        if request.method == "OPTIONS":
+            return await handler(request)
+
+        # Get user from auth context (set by auth middleware)
+        user: WebAppUser | None = request.get("user")
+        if user is None:
+            # No authenticated user, skip rate limiting
+            return await handler(request)
+
+        # Check rate limit
+        allowed, remaining = limiter.is_allowed(user.id)
+
+        if not allowed:
+            retry_after = limiter.get_retry_after(user.id)
+            logger.warning(
+                "api_rate_limited",
+                user_id=user.id,
+                retry_after=retry_after,
+                limit=limit,
+                window=window_seconds,
+            )
+            raise web.HTTPTooManyRequests(
+                text=json.dumps({
+                    "success": False,
+                    "error": {
+                        "code": "RATE_LIMITED",
+                        "message": f"Rate limit exceeded. Try again in {retry_after} seconds.",
+                    },
+                }),
+                content_type="application/json",
+                headers={
+                    "Retry-After": str(retry_after),
+                    "X-RateLimit-Limit": str(limit),
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": str(int(time.time()) + retry_after),
+                },
+            )
+
+        # Process request
+        response = await handler(request)
+
+        # Add rate limit headers to response
+        response.headers["X-RateLimit-Limit"] = str(limit)
+        response.headers["X-RateLimit-Remaining"] = str(remaining)
+
+        return response
+
+    return rate_limit_middleware
+
+
+# =============================================================================
+# Security Headers Middleware (BP1 fix)
+# =============================================================================
+
+
+def create_security_headers_middleware() -> Callable:
+    """
+    Create middleware that adds security headers to all responses.
+
+    Adds:
+    - Content-Security-Policy
+    - Strict-Transport-Security
+    - X-Content-Type-Options
+    - X-Frame-Options
+    - X-XSS-Protection
+    - Referrer-Policy
+
+    Returns:
+        Configured security headers middleware function.
+    """
+
+    @web.middleware
+    async def security_headers_middleware(
+        request: web.Request,
+        handler: Callable[[web.Request], Awaitable[web.Response]],
+    ) -> web.Response:
+        """Add security headers to all responses."""
+        response = await handler(request)
+
+        # Content Security Policy - strict for API
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'none'; frame-ancestors 'none'",
+        )
+
+        # HSTS - force HTTPS (only set if not already present)
+        response.headers.setdefault(
+            "Strict-Transport-Security",
+            "max-age=31536000; includeSubDomains",
+        )
+
+        # Prevent MIME type sniffing
+        response.headers.setdefault(
+            "X-Content-Type-Options",
+            "nosniff",
+        )
+
+        # Prevent embedding in iframes (except for Telegram WebApp)
+        # Note: frame-ancestors in CSP takes precedence
+        response.headers.setdefault(
+            "X-Frame-Options",
+            "DENY",
+        )
+
+        # XSS Protection (legacy, but still useful for older browsers)
+        response.headers.setdefault(
+            "X-XSS-Protection",
+            "1; mode=block",
+        )
+
+        # Referrer Policy - don't leak URLs
+        response.headers.setdefault(
+            "Referrer-Policy",
+            "strict-origin-when-cross-origin",
+        )
+
+        # Permissions Policy - disable unnecessary features
+        response.headers.setdefault(
+            "Permissions-Policy",
+            "geolocation=(), microphone=(), camera=()",
+        )
+
+        return response
+
+    return security_headers_middleware

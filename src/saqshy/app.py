@@ -117,25 +117,44 @@ async def create_admin_checker(app: web.Application) -> Callable[[int, int], Awa
     """
 
     async def check_admin(user_id: int, chat_id: int) -> bool:
-        """Check if user is admin in chat via database trust level."""
+        """Check if user is admin in chat via Telegram API."""
+        from aiogram.enums import ChatMemberStatus
 
-        session_factory = app.get("session_factory")
-        if session_factory is None:
+        bot = app.get("bot")
+        cache_service = app.get("cache_service")
+
+        if bot is None:
+            logger.warning("admin_check_no_bot", user_id=user_id, chat_id=chat_id)
             return False
 
+        # Check cache first
+        cache_key = f"admin:{chat_id}:{user_id}"
+        if cache_service:
+            cached = await cache_service.get(cache_key)
+            if cached is not None:
+                return cached == "1"
+
+        # Query Telegram API
         try:
-            from saqshy.db.models import TrustLevel
-            from saqshy.db.repositories import GroupMemberRepository
+            member = await bot.get_chat_member(chat_id, user_id)
+            is_admin = member.status in (
+                ChatMemberStatus.ADMINISTRATOR,
+                ChatMemberStatus.CREATOR,
+            )
 
-            async with session_factory() as session:
-                repo = GroupMemberRepository(session)
-                member = await repo.get_member(chat_id, user_id)
-                if member and member.trust_level == TrustLevel.ADMIN:
-                    return True
+            # Cache result for 5 minutes
+            if cache_service:
+                await cache_service.set(cache_key, "1" if is_admin else "0", ttl=300)
+
+            return is_admin
         except Exception as e:
-            logger.error("admin_check_error", error=str(e), user_id=user_id, chat_id=chat_id)
-
-        return False
+            logger.error(
+                "admin_check_telegram_error",
+                error=str(e),
+                user_id=user_id,
+                chat_id=chat_id,
+            )
+            return False
 
     return check_admin
 

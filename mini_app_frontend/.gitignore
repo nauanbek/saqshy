@@ -25,3 +25,8 @@ Thumbs.db
 
 # TypeScript cache
 *.tsbuildinfo
+
+# Test artifacts
+playwright-report
+test-results
+coverage

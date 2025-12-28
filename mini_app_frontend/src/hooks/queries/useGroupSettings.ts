@@ -9,7 +9,7 @@ export function useGroupSettings(groupId: number | null, options?: UseGroupSetti
   return useQuery({
     queryKey: queryKeys.groupSettings(groupId ?? 0),
     queryFn: () => getGroupSettings(groupId!),
-    enabled: groupId !== null && groupId > 0,
+    enabled: groupId !== null && groupId !== 0,
     staleTime: 30 * 1000, // 30 seconds
     ...options,
   });

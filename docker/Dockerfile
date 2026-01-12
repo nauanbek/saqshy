@@ -26,7 +26,7 @@ RUN npm run build
 # ============================================
 # Build stage - Install Python dependencies
 # ============================================
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 WORKDIR /app
 
@@ -51,7 +51,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # ============================================
 # Development stage - For local development
 # ============================================
-FROM python:3.12-slim AS development
+FROM python:3.14-slim AS development
 
 WORKDIR /app
 
@@ -82,7 +82,7 @@ CMD ["python", "-m", "saqshy"]
 # ============================================
 # Production stage - Optimized for deployment
 # ============================================
-FROM python:3.12-slim AS production
+FROM python:3.14-slim AS production
 
 WORKDIR /app
 
